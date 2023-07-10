@@ -1713,10 +1713,21 @@ void afterSleep(struct aeEventLoop *eventLoop) {
 
 /* =========================== Server initialization ======================== */
 
+/**
+ * 创建共享对象
+ * 共享对象是一组常用的字符串对象，它们在 Redis 服务器中被预先创建并共享使用。
+ * 这些共享对象在内部实现中是以全局变量的形式存在，可以在整个 Redis 服务器进程中被多个命令或数据结构共享引用，从而提高性能和减少内存使用。
+ * 
+ * 共享对象通常是一些常见的字符串，例如整数值、错误回复、空白回复等。通过共享对象，
+ * Redis 可以避免为每个命令或回复创建新的字符串对象，从而节省了内存的分配和释放开销，提高了性能。
+ * 
+ * 
+*/
 void createSharedObjects(void) {
     int j;
 
     /* Shared command responses */
+    /** 共享返回参数，比如说set命令执行后返回的OK */
     shared.crlf = createObject(OBJ_STRING,sdsnew("\r\n"));
     shared.ok = createObject(OBJ_STRING,sdsnew("+OK\r\n"));
     shared.emptybulk = createObject(OBJ_STRING,sdsnew("$0\r\n\r\n"));
@@ -1730,6 +1741,7 @@ void createSharedObjects(void) {
     shared.plus = createObject(OBJ_STRING,sdsnew("+"));
 
     /* Shared command error responses */
+    /** 共享报错的返回字符串，比如熟悉的 syntax error */
     shared.wrongtypeerr = createObject(OBJ_STRING,sdsnew(
         "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"));
     shared.err = createObject(OBJ_STRING,sdsnew("-ERR\r\n"));
@@ -1856,6 +1868,7 @@ void createSharedObjects(void) {
     shared.special_equals = createStringObject("=",1);
     shared.redacted = makeObjectShared(createStringObject("(redacted)",10));
 
+    /** 将数字0-9999作为共享对象存入 */
     for (j = 0; j < OBJ_SHARED_INTEGERS; j++) {
         shared.integers[j] =
             makeObjectShared(createObject(OBJ_STRING,(void*)(long)j));
@@ -1904,10 +1917,16 @@ void initServerConfig(void) {
 
     initConfigValues();
     updateCachedTime(1);
+
+    /* 设置服务器的运行ID，并给ID添加\0的结尾字符 */
     getRandomHexChars(server.runid,CONFIG_RUN_ID_SIZE);
     server.runid[CONFIG_RUN_ID_SIZE] = '\0';
+
+    
     changeReplicationId();
     clearReplicationId2();
+
+    /* 配置服务器的默认频率，默认为10 */
     server.hz = CONFIG_DEFAULT_HZ; /* Initialize it ASAP, even if it may get
                                       updated later after loading the config.
                                       This value may be used before the server
@@ -1915,6 +1934,8 @@ void initServerConfig(void) {
     server.timezone = getTimeZone(); /* Initialized by tzset(). */
     server.configfile = NULL;
     server.executable = NULL;
+
+    /* 配置服务器的运行架构是64位还是32位 */
     server.arch_bits = (sizeof(long) == 8) ? 64 : 32;
     server.bindaddr_count = CONFIG_DEFAULT_BINDADDR_COUNT;
     for (j = 0; j < CONFIG_DEFAULT_BINDADDR_COUNT; j++)
@@ -1963,15 +1984,26 @@ void initServerConfig(void) {
     server.latency_tracking_info_percentiles[1] = 99.0;  /* p99 */
     server.latency_tracking_info_percentiles[2] = 99.9;  /* p999 */
 
+
+    /**
+     * 初始化LRU的时间
+    */
     unsigned int lruclock = getLRUClock();
     atomicSet(server.lruclock,lruclock);
+
+    /* 初始化并设置保存条件 */
     resetServerSaveParams();
 
-    appendServerSaveParams(60*60,1);  /* save after 1 hour and 1 change */
-    appendServerSaveParams(300,100);  /* save after 5 minutes and 100 changes */
-    appendServerSaveParams(60,10000); /* save after 1 minute and 10000 changes */
+    /**
+     * 配置Redis的自动快照保存参数
+     */
+    appendServerSaveParams(60*60,1);  /* 一小时内一次修改则保存 save after 1 hour and 1 change */
+    appendServerSaveParams(300,100);  /* 五分钟内修改100次则保存 save after 5 minutes and 100 changes */
+    appendServerSaveParams(60,10000); /* 一分钟内修改1万次则保存 save after 1 minute and 10000 changes */
 
     /* Replication related */
+
+    /** 初始化主从复制的相关状态 */
     server.masterhost = NULL;
     server.masterport = 6379;
     server.master = NULL;
@@ -2005,6 +2037,7 @@ void initServerConfig(void) {
         server.oom_score_adj_values[j] = configOOMScoreAdjValuesDefaults[j];
 
     /* Double constants initialization */
+    /** 初始化一些常量 */
     R_Zero = 0.0;
     R_PosInf = 1.0/R_Zero;
     R_NegInf = -1.0/R_Zero;
@@ -2013,11 +2046,20 @@ void initServerConfig(void) {
     /* Command table -- we initialize it here as it is part of the
      * initial configuration, since command names may be changed via
      * redis.conf using the rename-command directive. */
+
+    /**
+     * 【核心】：创建和填充命令表，以便在 Redis 服务器中管理和执行命令。
+     * 
+     * 此处创建了两个字典 commands 和 orig_commands，用于存储命令和原始命令。
+     * commands命令：存储了 Redis 支持的当前命令集合，受配置文件影响，使用 `rename-command set set666`的配置置于redis.conf中可覆盖
+     * orig_commands命令：存储了 Redis 服务最初支持的命令集合，保留命令的原始状态
+     * 
+    */
     server.commands = dictCreate(&commandTableDictType);
     server.orig_commands = dictCreate(&commandTableDictType);
     populateCommandTable();
 
-    /* Debugging */
+    /* Debugging debug配置 */
     server.watchdog_period = 0;
 }
 
@@ -2343,15 +2385,16 @@ int listenToPort(int port, socketFds *sfd) {
     /* If we have no bind address, we don't listen on a TCP socket */
     if (server.bindaddr_count == 0) return C_OK;
 
+    /** 遍历redis.conf中配置的多个监听地址，分别进行绑定运行 */
     for (j = 0; j < server.bindaddr_count; j++) {
         char* addr = bindaddr[j];
         int optional = *addr == '-';
         if (optional) addr++;
         if (strchr(addr,':')) {
-            /* Bind IPv6 address. */
+            /* Bind IPv6 address. 绑定IPV6地址 */
             sfd->fd[sfd->count] = anetTcp6Server(server.neterr,port,addr,server.tcp_backlog);
         } else {
-            /* Bind IPv4 address. */
+            /* Bind IPv4 address. 绑定IPV4地址 */
             sfd->fd[sfd->count] = anetTcpServer(server.neterr,port,addr,server.tcp_backlog);
         }
         if (sfd->fd[sfd->count] == ANET_ERR) {
@@ -2448,6 +2491,7 @@ void makeThreadKillable(void) {
 void initServer(void) {
     int j;
 
+    /** 设置信号处理函数 */
     signal(SIGHUP, SIG_IGN);
     signal(SIGPIPE, SIG_IGN);
     setupSignalHandlers();
@@ -2459,6 +2503,7 @@ void initServer(void) {
     }
 
     /* Initialization after setting defaults from the config system. */
+    /** 初始化一些配置的基本参数，以及一些基础的数据结构创建 */
     server.aof_state = server.aof_enabled ? AOF_ON : AOF_OFF;
     server.hz = server.config_hz;
     server.pid = getpid();
@@ -2499,16 +2544,22 @@ void initServer(void) {
     server.client_mem_usage_buckets = NULL;
     resetReplicationBuffer();
 
+    /** 检查server是否配置了tls相关的端口和功能，如果配置了则进行tls的配置 */
     if ((server.tls_port || server.tls_replication || server.tls_cluster)
                 && tlsConfigure(&server.tls_ctx_config) == C_ERR) {
         serverLog(LL_WARNING, "Failed to configure TLS. Check logs for more info.");
         exit(1);
     }
 
+    /** 创建共享对象 */
     createSharedObjects();
+
+    /** 根据配置的最大客户端数目，尝试提高系统的最大打开文件数限制，以便支持足够多的并发客户端连接。 */
     adjustOpenFilesLimit();
     const char *clk_msg = monotonicInit();
     serverLog(LL_NOTICE, "monotonic clock: %s", clk_msg);
+
+    /** 【核心】：创建事件循环处理器 */
     server.el = aeCreateEventLoop(server.maxclients+CONFIG_FDSET_INCR);
     if (server.el == NULL) {
         serverLog(LL_WARNING,
@@ -2516,15 +2567,20 @@ void initServer(void) {
             strerror(errno));
         exit(1);
     }
+
+    /** 给Redis的默认16个DB分配内存 */
     server.db = zmalloc(sizeof(redisDb)*server.dbnum);
 
     /* Open the TCP listening socket for the user commands. */
+    /** 打开TCP连接，监听指定的IP和端口 */
     if (server.port != 0 &&
         listenToPort(server.port,&server.ipfd) == C_ERR) {
         /* Note: the following log text is matched by the test suite. */
         serverLog(LL_WARNING, "Failed listening on port %u (TCP), aborting.", server.port);
         exit(1);
     }
+
+    /** tls连接建立 */
     if (server.tls_port != 0 &&
         listenToPort(server.tls_port,&server.tlsfd) == C_ERR) {
         /* Note: the following log text is matched by the test suite. */
@@ -2552,7 +2608,12 @@ void initServer(void) {
     }
 
     /* Create the Redis databases, and initialize other internal state. */
+    /**
+     * 创建Redis的默认16个数据库，并且初始化内部的一些数据结构与状态，遍历server.dbnum次，默认16次
+    */
     for (j = 0; j < server.dbnum; j++) {
+
+        /** dictCreate创建字典，作为数据库的存储结构 */
         server.db[j].dict = dictCreate(&dbDictType);
         server.db[j].expires = dictCreate(&dbExpiresDictType);
         server.db[j].expires_cursor = 0;
@@ -2627,6 +2688,7 @@ void initServer(void) {
     /* Create the timer callback, this is our way to process many background
      * operations incrementally, like clients timeout, eviction of unaccessed
      * expired keys and so forth. */
+    /** 创建时间事件处理器，用来处理后台任务 */
     if (aeCreateTimeEvent(server.el, 1, serverCron, NULL, NULL) == AE_ERR) {
         serverPanic("Can't create event loop timers.");
         exit(1);
@@ -2654,6 +2716,8 @@ void initServer(void) {
 
     /* Register before and after sleep handlers (note this needs to be done
      * before loading persistence since it is used by processEventsWhileBlocked. */
+
+    /** 设置每次进入事件循环前 server 需要执行的操作，before在事件前执行，after在事件后执行 */
     aeSetBeforeSleepProc(server.el,beforeSleep);
     aeSetAfterSleepProc(server.el,afterSleep);
 
@@ -2661,23 +2725,36 @@ void initServer(void) {
      * no explicit limit in the user provided configuration we set a limit
      * at 3 GB using maxmemory with 'noeviction' policy'. This avoids
      * useless crashes of the Redis instance for out of memory. */
+    /** 如果操作系统是32位的，并且最大内存没有配置，那么就设置一个默认的最大值3GB */
     if (server.arch_bits == 32 && server.maxmemory == 0) {
         serverLog(LL_WARNING,"Warning: 32 bit instance detected but no memory limit set. Setting 3 GB maxmemory limit with 'noeviction' policy now.");
         server.maxmemory = 3072LL*(1024*1024); /* 3 GB */
         server.maxmemory_policy = MAXMEMORY_NO_EVICTION;
     }
 
+    /** 如果 Redis 集群功能被启用，调用 clusterInit() 进行集群的初始化。 */
     if (server.cluster_enabled) clusterInit();
+
+    /** 初始化 Redis 的脚本功能，包括加载和编译 Lua 脚本。 */
     scriptingInit(1);
+
+    /** 初始化 Redis 中的一些内置函数，包括命令的实现和函数注册。 */
     functionsInit();
+
+    /** 初始化 Redis 的慢查询日志功能，用于记录执行时间超过阈值的命令。 */
     slowlogInit();
+
+    /** 初始化 Redis 的延迟监视器功能，用于记录命令的执行延迟情况。 */
     latencyMonitorInit();
 
     /* Initialize ACL default password if it exists */
+    /** 如果配置了默认密码 requirepass，则更新 ACL（访问控制列表）的默认用户密码。 */
     ACLUpdateDefaultUserPassword(server.requirepass);
 
+    /** 应用配置中的看门狗周期，用于监控 Redis 服务器的运行状态。 */
     applyWatchdogPeriod();
 
+    /** 如果设置了 maxmemory_clients，则初始化 Redis 服务器客户端内存使用情况的桶。 */
     if (server.maxmemory_clients != 0)
         initServerClientMemUsageBuckets();
 }
@@ -2688,9 +2765,16 @@ void initServer(void) {
  * Thread Local Storage initialization collides with dlopen call.
  * see: https://sourceware.org/bugzilla/show_bug.cgi?id=19329 */
 void InitServerLast() {
+    /** 初始化 Redis 的后台异步任务。 */
     bioInit();
+
+    /** 初始化 Redis 的多线程 I/O（多个线程进行 I/O 操作） */
     initThreadedIO();
+
+    /** 设置 jemalloc 内存分配器的后台线程。 */
     set_jemalloc_bg_thread(server.jemalloc_bg_thread);
+
+    /** 获取当前 Redis 服务器的初始内存使用量。 */
     server.initial_memory_usage = zmalloc_used_memory();
 }
 
@@ -3382,6 +3466,8 @@ void call(client *c, int flags) {
         monotonic_start = getMonotonicUs();
 
     server.in_nested_call++;
+    
+    /** client中获取cmd命令，然后调用proc调用执行 */
     c->cmd->proc(c);
     server.in_nested_call--;
 
@@ -3705,6 +3791,7 @@ int processCommand(client *c) {
 
     /* Now lookup the command and check ASAP about trivial error conditions
      * such as wrong arity, bad command name and so forth. */
+    /** 通过lookupCommand函数从server.commands找到对应的命令对象 */
     c->cmd = c->lastcmd = c->realcmd = lookupCommand(c->argv,c->argc);
     sds err;
     if (!commandCheckExistence(c, &err)) {
@@ -4016,6 +4103,8 @@ int processCommand(client *c) {
         queueMultiCommand(c, cmd_flags);
         addReply(c,shared.queued);
     } else {
+
+        /** 此处call执行命令 */
         call(c,CMD_CALL_FULL);
         c->woff = server.master_repl_offset;
         if (listLength(server.ready_keys))
@@ -6161,12 +6250,22 @@ void createPidFile(void) {
 void daemonize(void) {
     int fd;
 
+    /** 通过fork函数创建一个子进程，并且创建成功或是创建失败都要退出父进程，只保留子进程执行，子进程就是我们后台运行的服务。
+     *  为什么要弄一个新的子进程呢，是因为shell界面在执行./redis-server命令的时候，shell本身就会调用fork函数来创建一个属于
+     *  shell进程的子进程，然后shell会调用execve系统函数，将这个子进程执行的主体替换成Redis的可执行文件，然后就会执行到Redis
+     *  的main方法。
+     * 
+     *  
+     */
     if (fork() != 0) exit(0); /* parent exits */
+
+    /** 如果fork函数返回0，则说明当前进程就是子进程，调用setsid函数来创建一个新的会话 */
     setsid(); /* create a new session */
 
     /* Every output goes to /dev/null. If Redis is daemonized but
      * the 'logfile' is set to 'stdout' in the configuration file
      * it will not log at all. */
+    /** 此处打开/dev/null，将IN，OUT，ERR都重定向到/dev/null，守护进程是在shell之外运行，所以需要把往shell输出的内容转移到/dev/null */
     if ((fd = open("/dev/null", O_RDWR, 0)) != -1) {
         dup2(fd, STDIN_FILENO);
         dup2(fd, STDOUT_FILENO);
@@ -6582,7 +6681,11 @@ int checkForSentinelMode(int argc, char **argv, char *exec_name) {
 
 /* Function called at startup to load RDB or AOF file in memory. */
 void loadDataFromDisk(void) {
+
+    /** 记录加载数据的开始时间 */
     long long start = ustime();
+
+    /** 判断aof持久化是否开启，开启则直接通过AOF文件进行恢复 */
     if (server.aof_state == AOF_ON) {
         int ret = loadAppendOnlyFiles(server.aof_manifest);
         if (ret == AOF_FAILED || ret == AOF_OPEN_ERR)
@@ -6599,6 +6702,8 @@ void loadDataFromDisk(void) {
             createReplicationBacklog();
             rdb_flags |= RDBFLAGS_FEED_REPL;
         }
+
+        /** 通过RDB文件进行加载 */
         if (rdbLoad(server.rdb_filename,&rsi,rdb_flags) == C_OK) {
             serverLog(LL_NOTICE,"DB loaded from disk: %.3f seconds",
                 (float)(ustime()-start)/1000000);
@@ -6850,11 +6955,17 @@ redisTestProc *getTestProcByName(const char *name) {
 }
 #endif
 
+/* Redis服务端的入口，类似SpringBoot应用，我们要启动一个服务的时候是要运行main方法，Redis也不例外，
+ * 需要通过main方法来启动一个对外提供服务的进程
+ *
+ * argc为参数的数量，argv为传入的参数值
+ * */
 int main(int argc, char **argv) {
     struct timeval tv;
     int j;
     char config_from_stdin = 0;
 
+/* 如果编译时定义了REDIS_TEST宏，则会走如下流程，我们编译走的是非测试逻辑，所以这一块代码直接跳过 */
 #ifdef REDIS_TEST
     if (argc >= 3 && !strcasecmp(argv[1], "test")) {
         int flags = 0;
@@ -6924,6 +7035,8 @@ int main(int argc, char **argv) {
     char *exec_name = strrchr(argv[0], '/');
     if (exec_name == NULL) exec_name = argv[0];
     server.sentinel_mode = checkForSentinelMode(argc,argv, exec_name);
+
+    //1. 初始化服务端的配置信息
     initServerConfig();
     ACLInit(); /* The ACL subsystem must be initialized ASAP because the
                   basic networking code and client creation depends on it. */
@@ -6940,6 +7053,7 @@ int main(int argc, char **argv) {
     /* We need to init sentinel right now as parsing the configuration file
      * in sentinel mode will have the effect of populating the sentinel
      * data structures with master nodes to monitor. */
+    /* 判断是否打开了哨兵模式，打开了的话就初始化哨兵的配置 */
     if (server.sentinel_mode) {
         initSentinelConfig();
         initSentinel();
@@ -6948,8 +7062,12 @@ int main(int argc, char **argv) {
     /* Check if we need to start in redis-check-rdb/aof mode. We just execute
      * the program main. However the program is part of the Redis executable
      * so that we can easily execute an RDB check on loading errors. */
+
+    /* 如果执行的是redis-check-rdb程序，则走redis_check_rdb_main方法检测RDB文件 */
     if (strstr(exec_name,"redis-check-rdb") != NULL)
         redis_check_rdb_main(argc,argv,NULL);
+
+    /* 如果执行的是redis-check-aof程序，则走redis_check_aof_main方法检测AOF文件 */
     else if (strstr(exec_name,"redis-check-aof") != NULL)
         redis_check_aof_main(argc,argv);
 
@@ -6958,10 +7076,16 @@ int main(int argc, char **argv) {
         sds options = sdsempty();
 
         /* Handle special options --help and --version */
+        /* 处理一些特殊的参数，比如说：-v，--version，--help，-h等参数，
+         * 在执行./redis-server -h或者-v的时候就会执行相应的usage()或者version()方法，
+         * 方法中通过print打印输出对应的版本信息或者帮助信息，然后执行exit()退出程序 */
         if (strcmp(argv[1], "-v") == 0 ||
             strcmp(argv[1], "--version") == 0) version();
         if (strcmp(argv[1], "--help") == 0 ||
             strcmp(argv[1], "-h") == 0) usage();
+
+        /* 内存测试，Redis在启动时分配指定数量的内存，并在内存分配完成后立即释放。这个选项
+         * 主要用于测试 Redis 在特定内存限制下的行为和性能。 */
         if (strcmp(argv[1], "--test-memory") == 0) {
             if (argc == 3) {
                 memtest(atoi(argv[2]),50);
@@ -6978,6 +7102,10 @@ int main(int argc, char **argv) {
          * Precedence wise, File, stdin, explicit options -- last config is the one that matters.
          *
          * First argument is the config file name? */
+
+        /**
+         * 第一个参数的字符串开头不是'--'，则说明第一个参数是配置文件，则把配置文件的路径保存到configfile里
+        */
         if (argv[1][0] != '-') {
             /* Replace the config file in server.exec_argv with its absolute path. */
             server.configfile = getAbsolutePath(argv[1]);
@@ -6988,8 +7116,13 @@ int main(int argc, char **argv) {
         sds *argv_tmp;
         int argc_tmp;
         int handled_last_config_arg = 1;
+
+        /**
+         * 对用户传入的其他参数进行分析
+        */
         while(j < argc) {
             /* Either first or last argument - Should we read config from stdin? */
+            /** 判断是否需要从stdin读取配置，也就是用户的输入参数，执行：`redis-server -`命令，按ctrl-D发送参数的时候执行此段逻辑 */
             if (argv[j][0] == '-' && argv[j][1] == '\0' && (j == 1 || j == argc-1)) {
                 config_from_stdin = 1;
             }
@@ -6998,6 +7131,10 @@ int main(int argc, char **argv) {
              * string "port 6380\n" to be parsed after the actual config file
              * and stdin input are parsed (if they exist).
              * Only consider that if the last config has at least one argument. */
+
+            /**
+             * 解析所有其他的选项，并附加到配置文件配置configfile里，比如`--port 6380`的配置会生成字符串"port 6380\n"加进去
+            */
             else if (handled_last_config_arg && argv[j][0] == '-' && argv[j][1] == '-') {
                 /* Option name */
                 if (sdslen(options)) options = sdscat(options,"\n");
@@ -7068,6 +7205,9 @@ int main(int argc, char **argv) {
     }
     if (server.sentinel_mode) sentinelCheckConfigFile();
     server.supervised = redisIsSupervised(server.supervised_mode);
+
+    /** 如果daemonize为1，则表明是配置Redis作为守护进程运行，
+     * supervised为0的话，表明Redis是非进程监控机制来管理服务进程的，这样才允许Redis作为守护进程运行 */
     int background = server.daemonize && !server.supervised;
     if (background) daemonize();
 
@@ -7086,6 +7226,7 @@ int main(int argc, char **argv) {
         serverLog(LL_WARNING, "Configuration loaded");
     }
 
+    /** 【核心】逻辑，初始化redis服务 */
     initServer();
     if (background || server.pidfile) createPidFile();
     if (server.set_proc_title) redisSetProcTitle(NULL);
@@ -7122,11 +7263,17 @@ int main(int argc, char **argv) {
         moduleInitModulesSystemLast();
         moduleLoadFromQueue();
         ACLLoadUsersAtStartup();
+
+        /** 最后一步初始化服务 */        
         InitServerLast();
         aofLoadManifestFromDisk();
+
+        /** 【核心】：从AOF文件或者RDB文件中加载数据到Redis进程中 */
         loadDataFromDisk();
         aofOpenIfNeededOnServerStart();
         aofDelHistoryFiles();
+
+        /** 在集群模式下验证集群配置和数据一致性 */
         if (server.cluster_enabled) {
             if (verifyClusterConfigWithData() == C_ERR) {
                 serverLog(LL_WARNING,
@@ -7158,6 +7305,7 @@ int main(int argc, char **argv) {
     }
 
     /* Warning the user about suspicious maxmemory setting. */
+    /* 告警：配置的最大内存小于1MB，不建议这样做 */
     if (server.maxmemory > 0 && server.maxmemory < 1024*1024) {
         serverLog(LL_WARNING,"WARNING: You specified a maxmemory value that is less than 1MB (current value is %llu bytes). Are you sure this is what you really want?", server.maxmemory);
     }
@@ -7165,7 +7313,10 @@ int main(int argc, char **argv) {
     redisSetCpuAffinity(server.server_cpulist);
     setOOMScoreAdj(-1);
 
+    /* 【核心】：运行ae事件处理器，直到服务关闭为止 */
     aeMain(server.el);
+
+    /* Redis服务关闭，删除事件循环 */
     aeDeleteEventLoop(server.el);
     return 0;
 }

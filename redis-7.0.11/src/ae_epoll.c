@@ -32,8 +32,8 @@
 #include <sys/epoll.h>
 
 typedef struct aeApiState {
-    int epfd;
-    struct epoll_event *events;
+    int epfd; /* epoll监听的内核注册表的文件描述符，这个文件描述符可以实现事件的注册、修改、删除等操作 */
+    struct epoll_event *events; /* 存储发生事件的详细信息 */
 } aeApiState;
 
 static int aeApiCreate(aeEventLoop *eventLoop) {

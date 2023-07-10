@@ -851,13 +851,27 @@ typedef struct RedisModuleDigest {
 #define OBJ_SHARED_REFCOUNT INT_MAX     /* Global object never destroyed. */
 #define OBJ_STATIC_REFCOUNT (INT_MAX-1) /* Object allocated in the stack. */
 #define OBJ_FIRST_SPECIAL_REFCOUNT OBJ_STATIC_REFCOUNT
+
+/**
+ * 一个Redis对象
+*/
 typedef struct redisObject {
+
+    /** redisObject包装数据的具体类型，4bit，可选值：OBJ_STRING、OBJ_LIST、OBJ_SET、OBJ_ZSET、OBJ_HASH */
     unsigned type:4;
+
+    /** redisObject包装数据的编码方式，4bit */
     unsigned encoding:4;
+
+    /** LRU的相对时间，24bit */
     unsigned lru:LRU_BITS; /* LRU time (relative to global lru_clock) or
                             * LFU data (least significant 8 bits frequency
                             * and most significant 16 bits access time). */
+    
+    /** 引用计数，当有他方对本redisObject引用时便+1，引用减少便-1，refcount为0则表示没有他方对本redisObject有引用，则可释放此redisObject的内存 */
     int refcount;
+
+    /** 指针，指向实际的包装数据 */
     void *ptr;
 } robj;
 
@@ -920,13 +934,45 @@ typedef struct clusterSlotToKeyMapping clusterSlotToKeyMapping;
  * by integers from 0 (the default database) up to the max configured
  * database. The database number is the 'id' field in the structure. */
 typedef struct redisDb {
+    /** 存储kv键值对的字典表 */
     dict *dict;                 /* The keyspace for this DB */
+
+    /** 存储每个key的过期时间 */
     dict *expires;              /* Timeout of keys with a timeout set */
+
+    /** 存储正在等待数据的客户端（通过 BLPOP 命令）。当一个客户端执行 BLPOP 命令时，
+     * 如果没有可用的数据，该客户端将被阻塞，并将其键添加到 blocking_keys 字典中，
+     * 以便在数据到达时能够及时唤醒并处理。 */
     dict *blocking_keys;        /* Keys with clients waiting for data (BLPOP)*/
+
+    /**
+     * 用于存储已经接收到 PUSH 数据的被阻塞键。当一个客户端执行 PUSH 命令，并且
+     * 某个键处于被阻塞状态时，该键将被添加到 ready_keys 字典中。这样，当有客户
+     * 端对该键执行 BLPOP 命令时，可以立即获取到已经准备好的数据。
+    */
     dict *ready_keys;           /* Blocked keys that received a PUSH */
+
+
+    /**
+     * 用于存储被 MULTI/EXEC CAS 命令监视（watch）的键。当一个事务（transaction）
+     * 中的命令执行过程中，如果被监视的键发生了变化，事务将被中断。watched_keys 字典
+     * 用于跟踪被监视的键，以便在需要检查键的状态时能够快速定位和处理。
+    */
     dict *watched_keys;         /* WATCHED keys for MULTI/EXEC CAS */
+
+    /**
+     * 数据库ID
+    */
     int id;                     /* Database ID */
+
+    /**
+     * 平均过期时间，仅用来统计
+    */
     long long avg_ttl;          /* Average TTL, just for stats */
+
+    /**
+     * 统计过期事件执行的次数
+    */
     unsigned long expires_cursor; /* Cursor of the active expire cycle. */
     list *defrag_later;         /* List of key names to attempt to defrag one by one, gradually. */
     clusterSlotToKeyMapping *slots_to_keys; /* Array of slots to keys. Only used in cluster mode (db 0). */
@@ -1121,6 +1167,19 @@ typedef struct client {
     long duration;          /* Current command duration. Used for measuring latency of blocking/non-blocking cmds */
     int slot;               /* The slot the client is executing against. Set to -1 if no slot is being used */
     dictEntry *cur_script;  /* Cached pointer to the dictEntry of the script being executed. */
+
+    /**
+     * 在 Redis 服务器中，lastinteraction 用于跟踪客户端和服务器之间的最后一次交互时间。
+     * 每当客户端与服务器进行交互，无论是发送查询请求、接收响应还是执行其他操作，都会更新 
+     * lastinteraction 的值为当前的时间戳。这样，服务器可以通过比较当前时间与 lastinteraction 
+     * 的值来判断客户端是否超过了特定的超时时间。
+     * 通过记录最后一次交互时间，Redis 服务器可以实现超时机制，以管理客户端的连接和会话。
+     * 如果某个客户端在一段时间内没有与服务器进行交互，即超过了预设的超时时间，服务器可以主动关闭该客户端的连接，
+     * 释放相关资源，并进行相应的处理。
+     * 
+     * 通过使用 lastinteraction 变量，Redis 服务器能够监控客户端的活动时间，实现连接的超时管理，
+     * 并在必要时进行资源的回收和终止客户端连接。
+    */
     time_t lastinteraction; /* Time of the last interaction, used for timeout */
     time_t obuf_soft_limit_reached_time;
     int authenticated;      /* Needed when the default user requires auth. */
@@ -1454,8 +1513,13 @@ typedef enum childInfoType {
 
 struct redisServer {
     /* General */
+
+    /** 主进程的进程ID */
     pid_t pid;                  /* Main process pid. */
+    
+
     pthread_t main_thread_id;         /* Main thread id */
+    /** redis.conf配置文件的绝对路径 */
     char *configfile;           /* Absolute config file path, or NULL */
     char *executable;           /* Absolute executable file path. */
     char **exec_argv;           /* Executable argv vector (copy). */
@@ -1464,11 +1528,34 @@ struct redisServer {
                                    the actual 'hz' field value if dynamic-hz
                                    is enabled. */
     mode_t umask;               /* The umask value of the process on startup */
+
+    /**
+     * hz用于设置服务器每秒执行的定时器事件的频率。默认情况 hz 的值为 10，表示每秒钟会执行 10 次serverCron()定时器事件。
+     *
+     * 定时器事件是 Redis 服务器中的一些周期性任务，例如数据库持久化、过期键的检查和清理、集群状态更新等。
+     *
+     * 将 hz 设置为较高的值可以提高 Redis 对实时响应要求较高的任务的处理能力，例如对外提供高并发服务的场景。
+     * 然而，较高的 hz 值可能会增加服务器的负载和 CPU 使用率，因为定时器事件会更频繁地执行。
+     *
+     * 另一方面，将 hz 设置为较低的值可以减少服务器的负载和 CPU 使用率，适用于资源较为有限的环境。
+     * 然而，较低的 hz 值可能会降低 Redis 对某些实时任务的响应能力。
+     *
+     * 所以 hz 的值需要权衡服务器的性能和资源使用。实际使用中，需要根据具体的需求和服务器的资源状况来调整 hz 的值，
+     * 以获得最佳的性能和响应能力。
+     */
     int hz;                     /* serverCron() calls frequency in hertz */
     int in_fork_child;          /* indication that this is a fork child */
+
+    /** 【redisServer配置核心】存储键值对数据的db实例 */
     redisDb *db;
+
+    /** 存储了 Redis 支持的当前命令集合，受配置文件影响，使用 `rename-command set set666`的配置置于redis.conf中可覆盖 */
     dict *commands;             /* Command table */
+
+    /** 存储了 Redis 服务最初支持的命令集合，保留命令的原始状态 */
     dict *orig_commands;        /* Command table before command renaming. */
+
+    /** 事件处理循环 */
     aeEventLoop *el;
     rax *errors;                /* Errors table */
     redisAtomic unsigned int lruclock; /* Clock for LRU eviction */
@@ -1518,6 +1605,8 @@ struct redisServer {
     int sofd;                   /* Unix socket file descriptor */
     uint32_t socket_mark_id;    /* ID for listen socket marking */
     socketFds cfd;              /* Cluster bus listening socket */
+
+    /** 连接到当前Redis服务实例的客户端列表 */
     list *clients;              /* List of active clients */
     list *clients_to_close;     /* Clients to close asynchronously */
     list *clients_pending_write; /* There is to write or install handler. */
@@ -1628,6 +1717,8 @@ struct redisServer {
 
     /* Configuration */
     int verbosity;                  /* Loglevel in redis.conf */
+
+    /** 客户端最大空闲时长，超过这个时间Redis实例和客户端会自动断开 */
     int maxidletime;                /* Client timeout in seconds */
     int tcpkeepalive;               /* Set SO_KEEPALIVE if non-zero. */
     int active_expire_enabled;      /* Can be disabled for testing purposes. */

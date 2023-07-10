@@ -2470,6 +2470,8 @@ int processCommandAndResetClient(client *c) {
     int deadclient = 0;
     client *old_client = server.current_client;
     server.current_client = c;
+
+    /** processCommand执行命令 */
     if (processCommand(c) == C_OK) {
         commandProcessed(c);
         /* Update the client's memory to include output buffer growth following the
@@ -2522,18 +2524,23 @@ int processPendingCommandAndInputBuffer(client *c) {
  * return C_ERR in case the client was freed during the processing */
 int processInputBuffer(client *c) {
     /* Keep processing while there is something in the input buffer */
+
+    /** c->querybuf中就是需要执行的RESP命令，通过while循环读取querybuf中的命令 */
     while(c->qb_pos < sdslen(c->querybuf)) {
         /* Immediately abort if the client is in the middle of something. */
+        /** 客户端处于阻塞状态则中断循环，暂停处理缓冲区 */
         if (c->flags & CLIENT_BLOCKED) break;
 
         /* Don't process more buffers from clients that have already pending
          * commands to execute in c->argv. */
+        /** 检查客户端是否存在待执行的命令，有的话也暂停处理 */
         if (c->flags & CLIENT_PENDING_COMMAND) break;
 
         /* Don't process input from the master while there is a busy script
          * condition on the slave. We want just to accumulate the replication
          * stream (instead of replying -BUSY like we do with other clients) and
          * later resume the processing. */
+        /** 检查是否处于从节点的脚本执行期间，并且客户端是主节点。如果是，则中断循环，暂停处理输入缓冲区。 */
         if (isInsideYieldingLongCommand() && c->flags & CLIENT_MASTER) break;
 
         /* CLIENT_CLOSE_AFTER_REPLY closes the connection once the reply is
@@ -2541,10 +2548,13 @@ int processInputBuffer(client *c) {
          * this flag has been set (i.e. don't process more commands).
          *
          * The same applies for clients we want to terminate ASAP. */
+        /** 检查客户端是否需要在回复发送完毕后关闭连接。如果是，则中断循环，停止处理输入缓冲区。 */
         if (c->flags & (CLIENT_CLOSE_AFTER_REPLY|CLIENT_CLOSE_ASAP)) break;
 
         /* Determine request type when unknown. */
+        /** 如果客户端的请求类型还未确定，则根据查询缓冲区的第一个字符来确定请求类型是行内命令还是多条批量命令。 */
         if (!c->reqtype) {
+            /** 根据开头字符判断，'*'号则是符合RESP的标准命令，否则是管道类型命令，通过telnet发送的命令就是管道命令 */
             if (c->querybuf[c->qb_pos] == '*') {
                 c->reqtype = PROTO_REQ_MULTIBULK;
             } else {
@@ -2553,9 +2563,9 @@ int processInputBuffer(client *c) {
         }
 
         if (c->reqtype == PROTO_REQ_INLINE) {
-            if (processInlineBuffer(c) != C_OK) break;
+            if (processInlineBuffer(c) != C_OK) break; /** 处理管道命令 */
         } else if (c->reqtype == PROTO_REQ_MULTIBULK) {
-            if (processMultibulkBuffer(c) != C_OK) break;
+            if (processMultibulkBuffer(c) != C_OK) break; /** 处理RESP协议命令 */
         } else {
             serverPanic("Unknown request type");
         }
@@ -2574,6 +2584,8 @@ int processInputBuffer(client *c) {
             }
 
             /* We are finally ready to execute the command. */
+
+            /** 注释，我们终于准备去执行这个命令了！执行完后还要重置客户端 ^_^ */
             if (processCommandAndResetClient(c) == C_ERR) {
                 /* If the client is no longer valid, we avoid exiting this
                  * loop and trimming the client buffer later. So we return
@@ -2628,6 +2640,7 @@ void readQueryFromClient(connection *conn) {
     /* Update total number of reads on server */
     atomicIncr(server.stat_total_reads_processed, 1);
 
+    /** 默认从缓冲区读取的数据大小，默认16KB */
     readlen = PROTO_IOBUF_LEN;
     /* If this is a multi bulk request, and we are processing a bulk reply
      * that is large enough, try to maximize the probability that the query
@@ -2652,6 +2665,8 @@ void readQueryFromClient(connection *conn) {
     }
 
     qblen = sdslen(c->querybuf);
+
+    /** 给querybuf缓冲区分配空间 */
     if (!(c->flags & CLIENT_MASTER) && // master client's querybuf can grow greedy.
         (big_arg || sdsalloc(c->querybuf) < PROTO_IOBUF_LEN)) {
         /* When reading a BIG_ARG we won't be reading more than that one arg
@@ -2666,6 +2681,8 @@ void readQueryFromClient(connection *conn) {
         /* Read as much as possible from the socket to save read(2) system calls. */
         readlen = sdsavail(c->querybuf);
     }
+    
+    /** 读取querybuf，示例："*3\r\n$3\r\nset\r\n$8\r\nusername\r\n$7\r\nyunxiao\r\n", 翻译过来就是："set username yunxiao" */
     nread = connRead(c->conn, c->querybuf+qblen, readlen);
     if (nread == -1) {
         if (connGetState(conn) == CONN_STATE_CONNECTED) {
@@ -2687,9 +2704,14 @@ void readQueryFromClient(connection *conn) {
 
     sdsIncrLen(c->querybuf,nread);
     qblen = sdslen(c->querybuf);
+
+    /** 判断queryBuf峰值是否小于当前读取的queryBuf长度，小于的话那就更新 */
     if (c->querybuf_peak < qblen) c->querybuf_peak = qblen;
 
+    /** 更新最后一次交互时间的时间戳 */
     c->lastinteraction = server.unixtime;
+
+    /** 更新网络流量统计信息，如果是主从复制中的master节点，统计stat_net_repl_input_bytes，如果不是，则更新stat_net_input_bytes */
     if (c->flags & CLIENT_MASTER) {
         c->read_reploff += nread;
         atomicIncr(server.stat_net_repl_input_bytes, nread);
@@ -2697,10 +2719,13 @@ void readQueryFromClient(connection *conn) {
         atomicIncr(server.stat_net_input_bytes, nread);
     }
 
+    /** 判断如非主从复制中的master节点，并且当前读取的queryBuf长度大于最大queryBuf长度，则执行如下逻辑 */
     if (!(c->flags & CLIENT_MASTER) && sdslen(c->querybuf) > server.client_max_querybuf_len) {
         sds ci = catClientInfoString(sdsempty(),c), bytes = sdsempty();
 
         bytes = sdscatrepr(bytes,c->querybuf,64);
+
+        /** 此逻辑看日志便知为关闭达到了最大限值的客户端，通过sdsfree释放sds的内存，freeClientAsync 异步关闭客户端 */
         serverLog(LL_WARNING,"Closing client that reached max query buffer length: %s (qbuf initial bytes: %s)", ci, bytes);
         sdsfree(ci);
         sdsfree(bytes);
@@ -2710,6 +2735,8 @@ void readQueryFromClient(connection *conn) {
 
     /* There is more data in the client input buffer, continue parsing it
      * and check if there is a full command to execute. */
+
+    /** 进一步处理客户端输入过来的缓冲数据，缓冲区还有更多数据，进一步要检查这些数据里面有没有完整的命令可以执行 */
     if (processInputBuffer(c) == C_ERR)
          c = NULL;
 
@@ -4309,9 +4336,9 @@ int handleClientsWithPendingWritesUsingThreads(void) {
  * As a side effect of calling this function the client is put in the
  * pending read clients and flagged as such. */
 int postponeClientRead(client *c) {
-    if (server.io_threads_active &&
-        server.io_threads_do_reads &&
-        !ProcessingEventsWhileBlocked &&
+    if (server.io_threads_active && /** 是否开启了多线程 */
+        server.io_threads_do_reads && /** 是否开启多线程处理读取解析请求 */
+        !ProcessingEventsWhileBlocked && /** */
         !(c->flags & (CLIENT_MASTER|CLIENT_SLAVE|CLIENT_BLOCKED)) &&
         io_threads_op == IO_THREADS_OP_IDLE)
     {

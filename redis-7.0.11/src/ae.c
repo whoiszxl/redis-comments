@@ -48,7 +48,9 @@
 #include "config.h"
 
 /* Include the best multiplexing layer supported by this system.
- * The following should be ordered by performances, descending. */
+ * The following should be ordered by performances, descending. 
+ * 程序在编译的时候自动选择系统中性能最高的I/O多路复用函数库来作为Redis底层多路复用的实现
+ */
 #ifdef HAVE_EVPORT
 #include "ae_evport.c"
 #else
@@ -433,6 +435,7 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
              * Fire the readable event if the call sequence is not
              * inverted. */
             if (!invert && fe->mask & mask & AE_READABLE) {
+                /** 此处进入命令执行的逻辑，跳转到connection.c的connSocketEventHandler方法 */
                 fe->rfileProc(eventLoop,fd,fe->clientData,mask);
                 fired++;
                 fe = &eventLoop->events[fd]; /* Refresh in case of resize. */
@@ -490,15 +493,23 @@ int aeWait(int fd, int mask, long long milliseconds) {
     }
 }
 
+/* 【核心】事件循环处理，这一段体现出了Redis的命令是单线程执行的  */
 void aeMain(aeEventLoop *eventLoop) {
+    /** 此处将eventLoop事件循环的属性编辑为不停止 */
     eventLoop->stop = 0;
+
+    /** 此处进入自旋状态，直到stop状态被置为1的时候才停止自旋 */
     while (!eventLoop->stop) {
+        /** 处理事件的函数 */
         aeProcessEvents(eventLoop, AE_ALL_EVENTS|
                                    AE_CALL_BEFORE_SLEEP|
                                    AE_CALL_AFTER_SLEEP);
     }
 }
 
+/**
+ * 返回当前使用的IO多路复用库的名称
+*/
 char *aeGetApiName(void) {
     return aeApiName();
 }

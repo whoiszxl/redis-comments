@@ -306,6 +306,7 @@ static void connSocketEventHandler(struct aeEventLoop *el, int fd, void *clientD
     int call_read = (mask & AE_READABLE) && conn->read_handler;
 
     /* Handle normal I/O flows */
+    /** 接着跳转到此处，通过callHandler来处理 I/O */
     if (!invert && call_read) {
         if (!callHandler(conn, conn->read_handler)) return;
     }

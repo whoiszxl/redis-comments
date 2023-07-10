@@ -462,10 +462,14 @@ void loadServerConfigFromString(char *config) {
         lines[i] = sdstrim(lines[i]," \t\r\n");
 
         /* Skip comments and blank lines */
+        /** 判断每行开头是否是#号或者\0，就是判断判断是否是注释或者空行，如果是的话直接跳过 */
         if (lines[i][0] == '#' || lines[i][0] == '\0') continue;
 
         /* Split into arguments */
+        /** 获取实际参数，lines[i] 假如读取的是 "databases 16"，那么argv会接收一个字符数组，argv[0]为"databases"，argv[1]为"16" */
         argv = sdssplitargs(lines[i],&argc);
+
+        /** 校验参数有效性 */
         if (argv == NULL) {
             err = "Unbalanced quotes in configuration line";
             goto loaderr;
@@ -476,18 +480,23 @@ void loadServerConfigFromString(char *config) {
             sdsfreesplitres(argv,argc);
             continue;
         }
+
+        /** sds字符串转小写 */
         sdstolower(argv[0]);
 
         /* Iterate the configs that are standard */
+        /** 从configs这个字典中找出对应的config配置出来，假如说此处的argv[0]为databases，那么此处的*config就会把相关配置读取出来 */
         standardConfig *config = lookupConfig(argv[0]);
         if (config) {
             /* For normal single arg configs enforce we have a single argument.
              * Note that MULTI_ARG_CONFIGs need to validate arg count on their own */
+            /** 如果不是多参数配置，argc的数量是多参数的话，那么就直接报错 */
             if (!(config->flags & MULTI_ARG_CONFIG) && argc != 2) {
                 err = "wrong number of arguments";
                 goto loaderr;
             }
 
+            /** 如果是多参数处理，则需要将argv[1]切分成多个，参考redis.conf配置：save 3600 1 300 100 60 10000 */
             if ((config->flags & MULTI_ARG_CONFIG) && argc == 2 && sdslen(argv[1])) {
                 /* For MULTI_ARG_CONFIGs, if we only have one argument, try to split it by spaces.
                  * Only if the argument is not empty, otherwise something like --save "" will fail.
@@ -501,11 +510,13 @@ void loadServerConfigFromString(char *config) {
                 sdsfreesplitres(new_argv, new_argc);
             } else {
                 /* Set config using all arguments that follows */
+                /** 单参数处理，将redis.conf配置文件中的值覆盖掉configs字典里的值 */
                 if (!config->interface.set(config, &argv[1], argc-1, &err)) {
                     goto loaderr;
                 }
             }
 
+            /** 使用完argv参数后，释放argv的内存 */
             sdsfreesplitres(argv,argc);
             continue;
         } else {
@@ -659,6 +670,9 @@ void loadServerConfig(char *filename, char config_from_stdin, char *options) {
          *                       config file, as if the current entry was never encountered.
          *                       This will allow for empty conf.d directories to be included. */
 
+        /**
+         * 配置文件路径中存在通配符，则走通配符逻辑
+        */
         if (strchr(filename, '*') || strchr(filename, '?') || strchr(filename, '[')) {
             /* A wildcard character detected in filename, so let us use glob */
             if (glob(filename, 0, NULL, &globbuf) == 0) {
@@ -680,12 +694,17 @@ void loadServerConfig(char *filename, char config_from_stdin, char *options) {
         } else {
             /* No wildcard in filename means we can use the original logic to read and
              * potentially fail traditionally */
+            /**
+             * 文件路径中不存在通配符，则走默认逻辑，直接通过fopen打开文件
+            */
             if ((fp = fopen(filename, "r")) == NULL) {
                 serverLog(LL_WARNING,
                           "Fatal error, can't open config file '%s': %s",
                           filename, strerror(errno));
                 exit(1);
             }
+
+            /** 打开文件之后，通过fgets一批一批读取redis.conf中的内容，然后一批一批追加到config变量中 */
             while(fgets(buf,CONFIG_READ_LEN+1,fp) != NULL)
                 config = sdscat(config,buf);
             fclose(fp);
@@ -693,6 +712,7 @@ void loadServerConfig(char *filename, char config_from_stdin, char *options) {
     }
 
     /* Append content from stdin */
+    /* 如果存在用户的输入，则也追加到config变量的末尾 */
     if (config_from_stdin) {
         serverLog(LL_WARNING,"Reading config from stdin");
         fp = stdin;
@@ -701,10 +721,13 @@ void loadServerConfig(char *filename, char config_from_stdin, char *options) {
     }
 
     /* Append the additional options */
+    /* 如果启动redis-server后面存在参数，如`--port 6380`，则也追加到config变量之后 */
     if (options) {
         config = sdscat(config,"\n");
         config = sdscat(config,options);
     }
+
+    /* 解析config配置，将其配置加载到服务进程中 */
     loadServerConfigFromString(config);
     sdsfree(config);
 }
@@ -2166,18 +2189,28 @@ static int numericParseString(standardConfig *config, sds value, const char **er
 }
 
 static int numericConfigSet(standardConfig *config, sds *argv, int argc, const char **err) {
+    /** 
+     * 将变量 argc 标记为未使用（unused），用于消除编译器的未使用变量警告。 
+     * 通常是为了保持代码的一致性和规范性，以及避免不必要的编译器警告。
+     * 虽然变量没有被使用，但将其标记为未使用可以确保代码的可读性，并且不会产生关于未使用变量的警告信息。
+     * */
     UNUSED(argc);
+
     long long ll, prev = 0;
 
+    /**  将字符串argv[0]解析为数字，并放到ll变量中 */
     if (!numericParseString(config, argv[0], err, &ll))
         return 0;
 
+    /** 检查数值是否在配置项的有效范围内 */
     if (!numericBoundaryCheck(config, ll, err))
         return 0;
-
+    
+    /** 如果is_valid_fn配置打开了，则调用is_valid_fn对ll数值进一步验证 */
     if (config->data.numeric.is_valid_fn && !config->data.numeric.is_valid_fn(ll, err))
         return 0;
 
+    /** 获取原始config里面的配置，并保存到prev变量中，接着判断要设置过来的值是否和原始的值是否不相等，不相等则重新设置 */
     GET_NUMERIC_TYPE(prev)
     if (prev != ll) {
         return setNumericType(config, ll, err);

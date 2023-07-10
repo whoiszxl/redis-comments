@@ -1941,12 +1941,14 @@ static redisReply *reconnectingRedisCommand(redisContext *c, const char *fmt, ..
  * User interface
  *--------------------------------------------------------------------------- */
 
+/* 解析用户输入的参数 */
 static int parseOptions(int argc, char **argv) {
     int i;
 
     for (i = 1; i < argc; i++) {
         int lastarg = i==argc-1;
 
+        /* 判断有没有-h的参数，并且此参数非最后一个参数，那么此处就会将配置里hostip从127.0.0.1替换成用户传入的 */
         if (!strcmp(argv[i],"-h") && !lastarg) {
             sdsfree(config.conn_info.hostip);
             config.conn_info.hostip = sdsnew(argv[++i]);
@@ -8869,6 +8871,7 @@ static sds askPassword(const char *msg) {
 
 /*------------------------------------------------------------------------------
  * Program main()
+ * redis-cli程序入口
  *--------------------------------------------------------------------------- */
 
 int main(int argc, char **argv) {
@@ -8876,6 +8879,8 @@ int main(int argc, char **argv) {
     struct timeval tv;
 
     memset(&config.sslconfig, 0, sizeof(config.sslconfig));
+
+    /* 初始化客户端的基础配置，比如说这里的hostip默认就是去连接127.0.0.1，端口就是连接6379 */
     config.conn_info.hostip = sdsnew("127.0.0.1");
     config.conn_info.hostport = 6379;
     config.hostsocket = NULL;
@@ -8947,6 +8952,8 @@ int main(int argc, char **argv) {
     spectrum_palette = spectrum_palette_color;
     spectrum_palette_size = spectrum_palette_color_size;
 
+    /* 这段代码根据输出环境的特征来决定 Redis 的输出格式和推送行为。它通过判断标准输出是否
+     * 连接到终端和环境变量的存在来决定使用哪种输出格式，并决定是否将输出推送给客户端。 */
     if (!isatty(fileno(stdout)) && (getenv("FAKETTY") == NULL)) {
         config.output = OUTPUT_RAW;
         config.push_output = 0;
@@ -8957,6 +8964,7 @@ int main(int argc, char **argv) {
     config.mb_delim = sdsnew("\n");
     config.cmd_delim = sdsnew("\n");
 
+    /* 根据用户输入的参数来配置config */
     firstarg = parseOptions(argc,argv);
     argc -= firstarg;
     argv += firstarg;

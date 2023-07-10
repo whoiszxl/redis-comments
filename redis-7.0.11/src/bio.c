@@ -61,10 +61,16 @@
 #include "server.h"
 #include "bio.h"
 
+/** 保存线程描述符的数组 */
 static pthread_t bio_threads[BIO_NUM_OPS];
+
+/** 保存互斥锁的数组 */
 static pthread_mutex_t bio_mutex[BIO_NUM_OPS];
+
+/** 保存条件变量的两个数组 */
 static pthread_cond_t bio_newjob_cond[BIO_NUM_OPS];
 static pthread_cond_t bio_step_cond[BIO_NUM_OPS];
+
 static list *bio_jobs[BIO_NUM_OPS];
 /* The following array is used to hold the number of pending jobs for every
  * OP type. This allows us to export the bioPendingJobsOfType() API that is
@@ -97,6 +103,7 @@ void *bioProcessBackgroundJobs(void *arg);
 #define REDIS_THREAD_STACK_SIZE (1024*1024*4)
 
 /* Initialize the background system, spawning the thread. */
+/** 初始化后台线程， */
 void bioInit(void) {
     pthread_attr_t attr;
     pthread_t thread;

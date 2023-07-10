@@ -503,6 +503,10 @@ sds sdscat(sds s, const char *t) {
  *
  * After the call, the modified sds string is no longer valid and all the
  * references must be substituted with the new pointer returned by the call. */
+
+/**
+ * 追加一个sds字符串t到另一个sds字符串s的末尾
+*/
 sds sdscatsds(sds s, const sds t) {
     return sdscatlen(s, t, sdslen(t));
 }

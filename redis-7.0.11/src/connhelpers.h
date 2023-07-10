@@ -76,6 +76,8 @@ static inline int connHasRefs(connection *conn) {
  */
 static inline int callHandler(connection *conn, ConnectionCallbackFunc handler) {
     connIncrRefs(conn);
+    
+    /** 此处继续执行事件处理逻辑 */
     if (handler) handler(conn);
     connDecrRefs(conn);
     if (conn->flags & CONN_FLAG_CLOSE_SCHEDULED) {
