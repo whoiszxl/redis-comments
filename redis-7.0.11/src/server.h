@@ -831,17 +831,57 @@ typedef struct RedisModuleDigest {
 /* Objects encoding. Some kind of objects like Strings and Hashes can be
  * internally represented in multiple ways. The 'encoding' field of the object
  * is set to one of this fields for this object. */
+
+/**
+ * 当value无法转换为整形或者长度大于44字节时，便以RAW格式进行存储。此方式直接以sdshdr进行数据的保存。
+*/
 #define OBJ_ENCODING_RAW 0     /* Raw representation */
+
+/**
+ * 表示对象以整数形式进行编码。
+ * 当robj以此类型作为encoding编码时，会直接将value字符串转为整数值，并直接存储到ptr字段中，
+ * 避免多创建一个sds字符串实例，降低内存开销，读取时可直接读取，避免还需要再从sds对象中再获取一次。
+*/
 #define OBJ_ENCODING_INT 1     /* Encoded as integer */
+
+
 #define OBJ_ENCODING_HT 2      /* Encoded as hash table */
+
+
 #define OBJ_ENCODING_ZIPMAP 3  /* No longer used: old hash encoding. */
+
+
 #define OBJ_ENCODING_LINKEDLIST 4 /* No longer used: old list encoding. */
+
+
 #define OBJ_ENCODING_ZIPLIST 5 /* No longer used: old list/hash/zset encoding. */
+
+
 #define OBJ_ENCODING_INTSET 6  /* Encoded as intset */
+
+
 #define OBJ_ENCODING_SKIPLIST 7  /* Encoded as skiplist */
+
+
+/**
+ * 表示对象以嵌入式简单动态字符串（SDS）的形式进行编码。
+ * 若保存的字符串长度<=44个字节时，则采用embstr的方式将字符串直接作为sdshdr8进行存储。
+ * sdshdr8因为需要存储len,alloc,flags,字符串结尾'\0'的存储，占用额外4字节，robj本身占用16字节，
+ * 那么64字节就还剩下44字节了。
+ * 
+ * 为什么是64字节，那是因为CPU从内存将数据读取到高速缓存时是按照cache line进行读取的，这个cache line的大小就是64个字节。
+ * CPU需要访问内存中的某个数据时，它会将整个缓存行加载到缓存中，并且如果只需要其中的一部分数据，也会将整个缓存行加载到缓存中。
+ * 所以embstr的设计就是以64字节为标准。
+*/
 #define OBJ_ENCODING_EMBSTR 8  /* Embedded sds string encoding */
+
+
 #define OBJ_ENCODING_QUICKLIST 9 /* Encoded as linked list of listpacks */
+
+
 #define OBJ_ENCODING_STREAM 10 /* Encoded as a radix tree of listpacks */
+
+
 #define OBJ_ENCODING_LISTPACK 11 /* Encoded as a listpack */
 
 #define LRU_BITS 24
@@ -853,17 +893,22 @@ typedef struct RedisModuleDigest {
 #define OBJ_FIRST_SPECIAL_REFCOUNT OBJ_STATIC_REFCOUNT
 
 /**
- * 一个Redis对象
+ * 一个Redis对象，用于在 Redis 中表示不同类型的数据对象，如字符串、列表、哈希等。
+ * 它提供了灵活的方式来存储和操作数据，以及管理对象的引用计数和淘汰策略。
 */
 typedef struct redisObject {
 
     /** redisObject包装数据的具体类型，4bit，可选值：OBJ_STRING、OBJ_LIST、OBJ_SET、OBJ_ZSET、OBJ_HASH */
     unsigned type:4;
 
-    /** redisObject包装数据的编码方式，4bit */
+    /** redisObject包装数据的编码方式，4bit，不同的数据类型有不同的编码方式，用于优化存储和操作效率。*/
     unsigned encoding:4;
 
-    /** LRU的相对时间，24bit */
+    /** 
+     * LRU的相对时间，24bit，根据对象的用法不同，可以有两种含义。
+     * 1. 如果对象被用作最近最少使用（LRU）算法的缓存项，则 lru 字段表示相对于全局 lru_clock 的 LRU 时间。用于决定对象的淘汰顺序。
+     * 2. 如果对象被用作最少频繁使用（LFU）算法的缓存项，则 lru 字段表示 LFU 数据，其中最低的 8 位表示频率（使用次数），而最高的 16 位表示访问时间。
+     */
     unsigned lru:LRU_BITS; /* LRU time (relative to global lru_clock) or
                             * LFU data (least significant 8 bits frequency
                             * and most significant 16 bits access time). */
@@ -871,7 +916,7 @@ typedef struct redisObject {
     /** 引用计数，当有他方对本redisObject引用时便+1，引用减少便-1，refcount为0则表示没有他方对本redisObject有引用，则可释放此redisObject的内存 */
     int refcount;
 
-    /** 指针，指向实际的包装数据 */
+    /** 指针，指向实际的包装数据，根据对象的类型和编码方式，可以指向不同的数据结构。 */
     void *ptr;
 } robj;
 
@@ -1511,6 +1556,9 @@ typedef enum childInfoType {
     CHILD_INFO_TYPE_MODULE_COW_SIZE
 } childInfoType;
 
+/**
+ * redis的服务实例，定义了 Redis 服务器的各种属性，如服务器的 ID、监听的端口、数据库、客户端连接等。它是表示整个 Redis 服务器的核心数据结构。
+*/
 struct redisServer {
     /* General */
 
@@ -1595,8 +1643,23 @@ struct redisServer {
     int port;                   /* TCP listening port */
     int tls_port;               /* TLS listening port */
     int tcp_backlog;            /* TCP listen() backlog */
+
+    /** 
+     * 绑定的IP地址，默认绑定当前机器的全部IP，默认最多16个，在 Redis 的配置文件中，可以通过 bind 参数来指定要绑定的地址。
+     * 
+     * 通过指定绑定的网络地址，Redis 服务器可以限制接受连接的网络接口。这对于网络安全和访问控制非常重要。
+     * 通过在 bindaddr 数组中添加多个地址，可以使 Redis 服务器监听多个网络接口，从而允许来自不同网络接口的连接。
+     * 
+     * 例如，如果 bindaddr 数组中有两个元素分别为 "127.0.0.1" 和 "192.168.0.1"，那么 Redis 服务器将绑定到本地
+     * 回环地址和指定的 IP 地址，只接受来自这两个地址的连接。如果 bindaddr 数组为空，则 Redis 服务器会监听所有可
+     * 用的网络接口，接受来自任何地址的连接。
+     * */
     char *bindaddr[CONFIG_BINDADDR_MAX]; /* Addresses we should bind to */
+
+    /** 表示 bindaddr 数组中地址数量的整数值。它记录了实际存储在 bindaddr 数组中的网络地址的数量。 */
     int bindaddr_count;         /* Number of addresses in server.bindaddr[] */
+
+
     char *bind_source_addr;     /* Source address to bind on for outgoing connections */
     char *unixsocket;           /* UNIX socket path */
     unsigned int unixsocketperm; /* UNIX socket permission (see mode_t) */
@@ -1606,10 +1669,26 @@ struct redisServer {
     uint32_t socket_mark_id;    /* ID for listen socket marking */
     socketFds cfd;              /* Cluster bus listening socket */
 
-    /** 连接到当前Redis服务实例的客户端列表 */
+    /** 连接到当前Redis服务实例的客户端列表，每当有新的客户端连接到 Redis 服务器时，将创建一个客户端对象，
+     * 并将其添加到 clients 链表中。这个链表维护了所有活动客户端的状态和信息。 */
     list *clients;              /* List of active clients */
+
+    /**
+     * 存储需要异步关闭的客户端连接。在某些情况下，需要关闭客户端连接，但为了避免阻塞 Redis 服务器的主事件
+     * 循环，可以将需要关闭的客户端添加到 clients_to_close 链表中，在适当的时机异步关闭这些连接。
+    */
     list *clients_to_close;     /* Clients to close asynchronously */
+
+    /**
+     * 存储有待写入数据或待安装处理程序的客户端连接。当需要向客户端发送响应数据时，将把客户端添加到 clients_pending_write 链表中。
+     * 这些客户端连接将在适当的时机被处理，将数据写入客户端的套接字。
+    */
     list *clients_pending_write; /* There is to write or install handler. */
+
+    /**
+     * 存储有待读取的客户端连接。当客户端的套接字缓冲区中有数据待读取时，将把客户端添加到 clients_pending_read 链表中。
+     * 这些客户端连接将在适当的时机被处理，读取套接字缓冲区中的数据。
+    */
     list *clients_pending_read;  /* Client has pending read socket buffers. */
     list *slaves, *monitors;    /* List of slaves and MONITORs */
     client *current_client;     /* Current client executing the command. */
@@ -1646,15 +1725,17 @@ struct redisServer {
     time_t loading_start_time;
     off_t loading_process_events_interval_bytes;
     /* Fields used only for stats */
-    time_t stat_starttime;          /* Server start time */
-    long long stat_numcommands;     /* Number of processed commands */
-    long long stat_numconnections;  /* Number of connections received */
-    long long stat_expiredkeys;     /* Number of expired keys */
-    double stat_expired_stale_perc; /* Percentage of keys probably expired */
-    long long stat_expired_time_cap_reached_count; /* Early expire cycle stops.*/
-    long long stat_expire_cycle_time_used; /* Cumulative microseconds used. */
-    long long stat_evictedkeys;     /* Number of evicted keys (maxmemory) */
-    long long stat_evictedclients;  /* Number of evicted clients */
+    /** 仅用于统计的字段 */
+
+    time_t stat_starttime;          /* Server start time | redis服务的启动时间 */
+    long long stat_numcommands;     /* Number of processed commands | 服务器处理的命令数量，即从启动到现在已经处理的命令的总数。 */
+    long long stat_numconnections;  /* Number of connections received | 服务器接收到的连接数量，即从启动到现在已经接收的连接的总数。*/
+    long long stat_expiredkeys;     /* Number of expired keys | 过期的键的数量，即已经过期并被删除的键的总数。 */
+    double stat_expired_stale_perc; /* Percentage of keys probably expired | 可能已经过期的键所占的百分比。这个百分比是一个估计值，用于衡量过期键的可能性。*/
+    long long stat_expired_time_cap_reached_count; /* Early expire cycle stops. | 表示因为达到过期时间上限而提前终止过期循环的次数。*/
+    long long stat_expire_cycle_time_used; /* Cumulative microseconds used. | 表示过期循环所使用的累计微秒数。这个字段记录了过期循环所消耗的时间。*/
+    long long stat_evictedkeys;     /* Number of evicted keys (maxmemory) | 表示因为达到最大内存限制而被驱逐的键的数量。 */
+    long long stat_evictedclients;  /* Number of evicted clients | 表示因为达到最大客户端数量限制而被驱逐的客户端的数量。*/
     long long stat_total_eviction_exceeded_time;  /* Total time over the memory limit, unit us */
     monotime stat_last_eviction_exceeded_time;  /* Timestamp of current eviction start, unit us */
     long long stat_keyspace_hits;   /* Number of successful lookups of keys */
@@ -1718,8 +1799,10 @@ struct redisServer {
     /* Configuration */
     int verbosity;                  /* Loglevel in redis.conf */
 
-    /** 客户端最大空闲时长，超过这个时间Redis实例和客户端会自动断开 */
+    /** 客户端的空闲超时时间，以秒为单位。当客户端在指定的时间内没有发送任何命令或数据，服务器将主动关闭连接。 */
     int maxidletime;                /* Client timeout in seconds */
+    
+    /** 如果设置为非零值，则在套接字上设置 SO_KEEPALIVE 选项，以启用 TCP Keep-Alive 功能。 */
     int tcpkeepalive;               /* Set SO_KEEPALIVE if non-zero. */
     int active_expire_enabled;      /* Can be disabled for testing purposes. */
     int active_expire_effort;       /* From 1 (default) to 10, active effort. */
@@ -1734,6 +1817,8 @@ struct redisServer {
     int active_defrag_cycle_max;       /* maximal effort for defrag in CPU percentage */
     unsigned long active_defrag_max_scan_fields; /* maximum number of fields of set/hash/zset/list to process from within the main dict scan */
     size_t client_max_querybuf_len; /* Limit for client query buffer length */
+
+    /** redis db的个数，默认16个 */
     int dbnum;                      /* Total number of configured DBs */
     int supervised;                 /* 1 if supervised, 0 otherwise. */
     int supervised_mode;            /* See SUPERVISED_* */
@@ -1746,17 +1831,50 @@ struct redisServer {
     double *latency_tracking_info_percentiles; /* Extended latency tracking info output percentile list configuration. */
     int latency_tracking_info_percentiles_len;
     /* AOF persistence */
+
+    /** 表示是否启用 AOF 持久化功能。当启用时，Redis 服务器会将写操作追加到 AOF 文件中，以记录数据的变化 */
     int aof_enabled;                /* AOF configuration */
+
+    /** 
+     * 表示 AOF 的状态
+     * 1. AOF_OFF：AOF 处于关闭状态
+     * 2. AOF_ON：AOF 处于打开状态，正在将写操作追加到 AOF 文件中
+     * 3. AOF_WAIT_REWRITE：AOF 正在进行重写操作 */
     int aof_state;                  /* AOF_(ON|OFF|WAIT_REWRITE) */
+
+    /** 
+     * 表示 AOF 的 fsync 策略，指定何时将数据同步到磁盘
+     * 1. AOF_FSYNC_EVERYSEC：每秒进行一次 fsync
+     * 2. AOF_FSYNC_ALWAYS：每次写入都进行 fsync
+     * 3. AOF_FSYNC_NO：不进行 fsync，交给操作系统自行处理
+     */
     int aof_fsync;                  /* Kind of fsync() policy */
+
+    /** AOF 文件的文件名（不包含路径） */
     char *aof_filename;             /* Basename of the AOF file and manifest file */
+
+    /** AOF 文件的目录名 */
     char *aof_dirname;              /* Name of the AOF directory */
+
+    /**  表示在进行 AOF 重写操作时是否禁止进行 fsync */
     int aof_no_fsync_on_rewrite;    /* Don't fsync if a rewrite is in prog. */
+
+    /** 表示当 AOF 文件大小的增长百分比超过某个阈值时，会触发 AOF 重写操作 */
     int aof_rewrite_perc;           /* Rewrite AOF if % growth is > M and... */
+
+    /** 表示在进行 AOF 重写操作时，AOF 文件的最小大小 */
     off_t aof_rewrite_min_size;     /* the AOF file is at least N bytes. */
+
+    /** 表示最近一次启动或重写时的 AOF 文件大小 */
     off_t aof_rewrite_base_size;    /* AOF size on latest startup or rewrite. */
+
+    /** 表示当前 AOF 文件的大小，包括基础大小和增量部分的大小 */
     off_t aof_current_size;         /* AOF current size (Including BASE + INCRs). */
+
+    /** 表示最近一次增量 AOF 的大小 */
     off_t aof_last_incr_size;       /* The size of the latest incr AOF. */
+
+    /** 表示已经请求同步到磁盘的 AOF 偏移量，与 aof_last_incr_size 进行比较。 */
     off_t aof_last_incr_fsync_offset; /* AOF offset which is already requested to be synced to disk.
                                        * Compare with the aof_last_incr_size. */
     int aof_flush_sleep;            /* Micros to sleep before flush. (used by tests) */
@@ -1784,19 +1902,43 @@ struct redisServer {
     int aof_disable_auto_gc;         /* If disable automatically deleting HISTORY type AOFs?
                                         default no. (for testings). */
 
-    /* RDB persistence */
+    /* RDB persistence，RDB（Redis Database）持久化是一种将数据库的状态保存到磁盘上的机制，用于在服务器重启时恢复数据。 */
+
+    /**  自上次保存（save）以来的数据库更改次数 */
     long long dirty;                /* Changes to DB from the last save */
+
+    /** 用于在后台保存（BGSAVE）失败时恢复 dirty 的值 */
     long long dirty_before_bgsave;  /* Used to restore dirty on failed BGSAVE */
+
+    /** 在加载 RDB 文件时已过期的键的数量 */
     long long rdb_last_load_keys_expired;  /* number of expired keys when loading RDB */
+
+    /** 在加载 RDB 文件时已加载的键的数量 */
     long long rdb_last_load_keys_loaded;   /* number of loaded keys when loading RDB */
+
+    /** RDB 保存点（save point）数组，用于指定在哪些数据库状态发生变化时执行保存操作 */
     struct saveparam *saveparams;   /* Save points array for RDB */
+
+    /** 保存点数组的长度，即保存操作的数量 */
     int saveparamslen;              /* Number of saving points */
+
+    /** RDB 文件的名称 */
     char *rdb_filename;             /* Name of RDB file */
+
+    /** 是否对 RDB 文件进行压缩 */
     int rdb_compression;            /* Use compression in RDB? */
+    
+    /** 是否在 RDB 文件中使用校验和 */
     int rdb_checksum;               /* Use RDB checksum? */
+
+    /** 如果实例不使用持久化，是否删除仅用于同步（SYNC）的 RDB 文件 */
     int rdb_del_sync_files;         /* Remove RDB files used only for SYNC if
                                        the instance does not use persistence. */
+
+    /** 上次成功保存（save）的时间戳 */
     time_t lastsave;                /* Unix time of last successful save */
+
+    /** 上次尝试后台保存（BGSAVE）的时间戳 */
     time_t lastbgsave_try;          /* Unix time of last attempted bgsave */
     time_t rdb_save_time_last;      /* Time used by last RDB save run. */
     time_t rdb_save_time_start;     /* Current RDB save start time. */
@@ -1825,18 +1967,29 @@ struct redisServer {
     redisOpArray also_propagate;    /* Additional command to propagate. */
     int replication_allowed;        /* Are we allowed to replicate? */
     /* Logging */
+
+    /** 日志文件的路径 */
     char *logfile;                  /* Path of log file */
+    /** 是否启用系统日志 */
     int syslog_enabled;             /* Is syslog enabled? */
+    /** 系统日志标识符 */
     char *syslog_ident;             /* Syslog ident */
+    /** 系统日志设施 */
     int syslog_facility;            /* Syslog facility */
+    /** 是否启用崩溃日志的信号处理器 */
     int crashlog_enabled;           /* Enable signal handler for crashlog.
                                      * disable for clean core dumps. */
+    /** 是否在崩溃时启用内存检查 */                                
     int memcheck_enabled;           /* Enable memory check on crash. */
+    /** 是否在发生 panic 和断言失败时使用 exit() 而不是 abort() */
     int use_exit_on_panic;          /* Use exit() on panic and assert rather than
                                      * abort(). useful for Valgrind. */
     /* Shutdown */
+    /** 优雅关闭的时间限制，以秒为单位 */
     int shutdown_timeout;           /* Graceful shutdown time limit in seconds. */
+    /** 针对 SIGINT（中断）配置的关闭标志 */
     int shutdown_on_sigint;         /* Shutdown flags configured for SIGINT. */
+    /** 针对 SIGTERM（终止）配置的关闭标志 */
     int shutdown_on_sigterm;        /* Shutdown flags configured for SIGTERM. */
 
     /* Replication (master) */

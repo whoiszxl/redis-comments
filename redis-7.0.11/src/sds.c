@@ -57,13 +57,24 @@ static inline int sdsHdrSize(char type) {
     return 0;
 }
 
+/**
+ * 根据字符串的长度返回对应的sdshdr类型
+*/
 static inline char sdsReqType(size_t string_size) {
+
+    /** 如果字符串大小小于2^5（32），则返回SDS_TYPE_5。 */
     if (string_size < 1<<5)
         return SDS_TYPE_5;
+
+    /** 如果字符串大小小于2^8（256），则返回SDS_TYPE_8。 */
     if (string_size < 1<<8)
         return SDS_TYPE_8;
+
+    /** 如果字符串大小小于2^16（65536），则返回SDS_TYPE_16。 */
     if (string_size < 1<<16)
         return SDS_TYPE_16;
+
+/** 如果系统的long类型的最大值等于long long类型的最大值，并且字符串大小小于2^32（4294967296），则返回SDS_TYPE_32。否则，返回SDS_TYPE_64。*/       
 #if (LONG_MAX == LLONG_MAX)
     if (string_size < 1ll<<32)
         return SDS_TYPE_32;
@@ -91,47 +102,89 @@ static inline size_t sdsTypeMaxSize(char type) {
  * and 'initlen'.
  * If NULL is used for 'init' the string is initialized with zero bytes.
  * If SDS_NOINIT is used, the buffer is left uninitialized;
+ * 
+ * 创建一个新的sds字符串，sds字符串的内容由 init 指针和 initlen 长度指定。
+ * 如果 init 为 null 的话，则sds会被初始化成 0 字节。
  *
  * The string is always null-terminated (all the sds strings are, always) so
  * even if you create an sds string with:
+ * 
+ * 这个sds string 总是以空字符串 \0 结尾，因此使用如下代码创建 sds 的话
  *
  * mystring = sdsnewlen("abc",3);
  *
  * You can print the string with printf() as there is an implicit \0 at the
  * end of the string. However the string is binary safe and can contain
- * \0 characters in the middle, as the length is stored in the sds header. */
+ * \0 characters in the middle, as the length is stored in the sds header. 
+ * 
+ * 可以使用 print 打印这个字符串，字符串末尾是存在一个 \0 的。
+ * 然而这个字符串是二进制安全的，可以包含 \0 字符存在于字符串中部，因为字符串的长度是存储在 sds 的 header中，也就是 sds 上的 len 字段。
+ * 
+ * */
 sds _sdsnewlen(const void *init, size_t initlen, int trymalloc) {
     void *sh;
     sds s;
+
+    /** 根据初始化字符串的长度 initlen 来找到一个最小的 sdshdr 结构体，为了节省内存 */
     char type = sdsReqType(initlen);
+
     /* Empty strings are usually created in order to append. Use type 8
      * since type 5 is not good at this. */
+    /** 如果获得的类型是 sdshdr5, 则直接修改为 sdshdr8 类型，因 sdshdr5 偏小，会导致频繁类型转换和内存重新分配，影响性能。 */
     if (type == SDS_TYPE_5 && initlen == 0) type = SDS_TYPE_8;
-    int hdrlen = sdsHdrSize(type);
-    unsigned char *fp; /* flags pointer. */
-    size_t usable;
 
-    assert(initlen + hdrlen + 1 > initlen); /* Catch size_t overflow */
+    /** 
+     * 通过sdsHdrSize方法来获取目前的 sdshdr在内存中需要占用多大空间
+     * 
+     * Java中创建对象比较简单，仅仅需要 Person person = new Person(); new 一下就OK，JVM 底层会帮我们处理好底层细节，诸如内存分配之类。
+     * 但C/C++中则需开发者自行管理内存，我们先需要计算出一个对象先需要占用多大的空间，才能去申请这一片内存空间，才能把对象创建出来。
+     * 
+     */
+    int hdrlen = sdsHdrSize(type);
+    unsigned char *fp; /* flags pointer. sdshdr结构体中的flags字段的指针 */
+    size_t usable; /** 目前已使用的字符串空间 */
+
+    assert(initlen + hdrlen + 1 > initlen); /* Catch size_t overflow 断言校验，避免字符串总长度小于等于初始长度 */
+
+    /** 使用malloc分配内存，并获取到sh指针，此指针指向sdshdr对象的第一个字节，并将分配了多少内存的数量存储到 usable 中 */
     sh = trymalloc?
         s_trymalloc_usable(hdrlen+initlen+1, &usable) :
         s_malloc_usable(hdrlen+initlen+1, &usable);
+
+    /** 校验是否创建成功 */
     if (sh == NULL) return NULL;
+
+    /** 校验传入的 init 指针是否为 SDS_NOINIT, 为则将 init 置为 null，不做字符串内容的初始化 */
     if (init==SDS_NOINIT)
         init = NULL;
-    else if (!init)
+    else if (!init) /** 如果 init 为空指针，则通过 memset 来清空sdshdr */
         memset(sh, 0, hdrlen+initlen+1);
+
+    /** sh指针为 sdshdr 的首位，加上 hdrlen （sdshdr的长度），则刚好能定位到 buf的首位，再强转为 char* 指针，则 s 为 实际字符数组的指针 */
     s = (char*)sh+hdrlen;
+
+    /** buf指针减去1，指针减一则说明要让指针的位置往前移动一个char的长度，也就是一个字节，则刚好能够移动到 sdshdr 的 flags 字段首位，获取到字符串类型 */
     fp = ((unsigned char*)s)-1;
+
+    /** 目前已使用的大小则需要减去 sdshdr元数据所占用的长度，以及 \0 结尾符的长度 */
     usable = usable-hdrlen-1;
+
+    /** 然后判断目前已使用大小是否大于目前 sdshdr 的上限，超过了则重新赋值，赋值为目前 sdshdr 的最大值 */
     if (usable > sdsTypeMaxSize(type))
         usable = sdsTypeMaxSize(type);
+
+    /** 此处根据字符串类型来做对应处理 */
     switch(type) {
         case SDS_TYPE_5: {
+            /** 如果是 sdshdr5 类型，则将字符串类型和字符串的长度合并为一个字节，并将结果赋值给fp */
             *fp = type | (initlen << SDS_TYPE_BITS);
             break;
         }
         case SDS_TYPE_8: {
+            /** 如果是 sdshdr8 类型，则重置 s 指针，将其移动到 sdshdr8 的首位 */
             SDS_HDR_VAR(8,s);
+
+            /** 接着将 len、alloc、fp 三个元数据填充，SDS_TYPE_16，SDS_TYPE_32，SDS_TYPE_64 逻辑类似。 */
             sh->len = initlen;
             sh->alloc = usable;
             *fp = type;
@@ -159,6 +212,8 @@ sds _sdsnewlen(const void *init, size_t initlen, int trymalloc) {
             break;
         }
     }
+
+    /** 接着判断初始化字符串的长度和初始化的值是否存在，存在的话，则将初始化的值拷贝到当前创建出来的 sds 中，并在末尾补上 \0 结束符，并返回 */
     if (initlen && init)
         memcpy(s, init, initlen);
     s[initlen] = '\0';
@@ -238,6 +293,8 @@ void sdsclear(sds s) {
  * by sdslen(), but only the free buffer space we have. */
 sds _sdsMakeRoomFor(sds s, size_t addlen, int greedy) {
     void *sh, *newsh;
+
+    /** 获取当前 sds 的可用空间 */
     size_t avail = sdsavail(s);
     size_t len, newlen, reqlen;
     char type, oldtype = s[-1] & SDS_TYPE_MASK;
@@ -245,12 +302,26 @@ sds _sdsMakeRoomFor(sds s, size_t addlen, int greedy) {
     size_t usable;
 
     /* Return ASAP if there is enough space left. */
+    /** 如果可用空间大于等于需要分配的空间大小，就直接返回，不做分配。 */
     if (avail >= addlen) return s;
 
+    /** 
+     * 剩余空间不够则扩容，扩容策略如下：
+     * 1. 扩容之后内存小于1MB，则两倍扩容。
+     * 2. 扩容之后超过1MB，则每次固定扩容1MB。
+     */
+
+    /** 此处先拿到当前 sds 的已使用长度 */
     len = sdslen(s);
+
+    /** 拿到 sds 的 sdshdr 的首位置指针  */
     sh = (char*)s-sdsHdrSize(oldtype);
+
+    /** 将原始 sds 已使用的长度加上需要添加的长度 addlen，得到扩容之后的字符串大小 */
     reqlen = newlen = (len+addlen);
-    assert(newlen > len);   /* Catch size_t overflow */
+    assert(newlen > len);   /* Catch size_t overflow 断言校验：扩容之后的长度不能小于原始 sds 的长度 */
+
+    /** 【核心】：如果 newlen 扩容之后的字符串大小是小于 SDS_MAX_PREALLOC，也就是 1024*1024（1MB），则 newlen*2，否则直接加 1MB */
     if (greedy == 1) {
         if (newlen < SDS_MAX_PREALLOC)
             newlen *= 2;
@@ -258,15 +329,20 @@ sds _sdsMakeRoomFor(sds s, size_t addlen, int greedy) {
             newlen += SDS_MAX_PREALLOC;
     }
 
+    /** 获取到扩容之后的 sdshdr 类型 */
     type = sdsReqType(newlen);
 
     /* Don't use type 5: the user is appending to the string and type 5 is
      * not able to remember empty space, so sdsMakeRoomFor() must be called
      * at every appending operation. */
+    /** 若是 sdshdr5 则转 sdshdr8 */
     if (type == SDS_TYPE_5) type = SDS_TYPE_8;
 
+    /**  获取 sdshdr 的长度 */
     hdrlen = sdsHdrSize(type);
     assert(hdrlen + newlen + 1 > reqlen);  /* Catch size_t overflow */
+
+    /** 如果改变之后的type还是等于原始的type，说明 sdshdr 类型未发生改变，仅需将 sdshdr的buf 长度增加就可以了。 */
     if (oldtype==type) {
         newsh = s_realloc_usable(sh, hdrlen+newlen+1, &usable);
         if (newsh == NULL) return NULL;
@@ -274,17 +350,37 @@ sds _sdsMakeRoomFor(sds s, size_t addlen, int greedy) {
     } else {
         /* Since the header size changes, need to move the string forward,
          * and can't use realloc */
+
+        /** 如果 sdshdr 类型发生了改变，则申请一片新的内存空间 */
         newsh = s_malloc_usable(hdrlen+newlen+1, &usable);
         if (newsh == NULL) return NULL;
+
+        /** 
+         * 将 s（sds中buf的指针）作为起始，拷贝 len+1 的数据到新的 sdshdr 内存空间中，
+         * newsh+hdrlen的作用是做一定偏移，将s的数据准确拷贝到新的 sdshdr 的 buf 中。 */
         memcpy((char*)newsh+hdrlen, s, len+1);
+
+        /** 将 sh 的内存释放，也就是原始 sdshdr 的内存 */
         s_free(sh);
+
+        /** 将 s 指针指向新的 sdshdr 的buf位置 */
         s = (char*)newsh+hdrlen;
+
+        /** 接着修改sds的flags字段为新的 */
         s[-1] = type;
+
+        /** 重新设置len字段 */
         sdssetlen(s, len);
     }
+
+    /** 重新申请的内存大小usable需要减去 sdshdr的长度以及结尾符 \0 的长度，得到最后字符串buf实际占用的空间 */
     usable = usable-hdrlen-1;
+
+    /** 判断buf占用空间是否大于当前 sdshdr 的最大值，如果大于则直接限定为最大值 */
     if (usable > sdsTypeMaxSize(type))
         usable = sdsTypeMaxSize(type);
+
+    /** 将buf实际占用的空间作为 alloc 存储于 sdshdr 中的 alloc */
     sdssetalloc(s, usable);
     return s;
 }
@@ -321,24 +417,39 @@ sds sdsRemoveFreeSpace(sds s, int would_regrow) {
  * function when the caller detects that it has excess space. */
 sds sdsResize(sds s, size_t size, int would_regrow) {
     void *sh, *newsh;
+
+    /** 获取到当前 sds 的类型 */
     char type, oldtype = s[-1] & SDS_TYPE_MASK;
+    
+    /** 接着获取到 sdshdr 的所会占用的大小 */
     int hdrlen, oldhdrlen = sdsHdrSize(oldtype);
+
+    /** 获取到当前 sds 的字符串长度 */
     size_t len = sdslen(s);
+
+    /** sds 减去 sdshdr 的大小，则是将 sdshdr 实例的首位置指针存于 sh 中 */
     sh = (char*)s-oldhdrlen;
 
     /* Return ASAP if the size is already good. */
+    /** 判断s的buf已分配空间是否等于需要resize的大小，等于的话那就别resize了  */
     if (sdsalloc(s) == size) return s;
 
     /* Truncate len if needed. */
+    /** 如果需要resize的size小于当前的sds的len，则给len置为size */
     if (size < len) len = size;
 
     /* Check what would be the minimum SDS header that is just good enough to
      * fit this string. */
+    /** 获取到resize后需要一个什么 sdshdr 类型才能支持 */
     type = sdsReqType(size);
+
+    /** 判断是否需要支持 SDS_TYPE_5 类型，如果传 1，则不支持，需要将 SDS_TYPE_5 修改为 SDS_TYPE_8*/
     if (would_regrow) {
         /* Don't use type 5, it is not good for strings that are expected to grow back. */
         if (type == SDS_TYPE_5) type = SDS_TYPE_8;
     }
+
+    /** 接着再获取这个新的 sdshdr 的占用空间 */
     hdrlen = sdsHdrSize(type);
 
     /* If the type is the same, or can hold the size in it with low overhead
@@ -346,9 +457,31 @@ sds sdsResize(sds s, size_t size, int would_regrow) {
      * to do the copy only if really needed. Otherwise if the change is
      * huge, we manually reallocate the string to use the different header
      * type. */
+
+    /**
+     * 如果字符串对象的类型与新的类型相同，或者新类型可以以较低的开销保存大小（大于 SDS_TYPE_8），
+     * 那么我们只需使用 realloc() 进行内存重新分配，让分配器根据需要来执行实际的复制操作。否则，
+     * 如果变化很大，我们将手动重新分配字符串，使用不同的元数据类型（len,alloc）。
+     * 
+     * sdshdr之间resize，假如是缩容，从 sdshdr32 缩减到 sdshdr16，则我们只会通过 realloc()的操作
+     * 对 buf[] 进行重分配，uint32_t len 就不会缩减到 uint16_t len 了。
+     * 因为如果这样缩减的话，需要重新分配一块大内存，然后创建新的实例，再将旧值拷贝到新实例中，效率太低，
+     * 而直接对buf[]进行重分配的话，影响就很小了，唯一影响仅是浪费几个字节。
+    */
     int use_realloc = (oldtype==type || (type < oldtype && type > SDS_TYPE_8));
+
+    /** 
+     * 此处获取到新的len长度
+     * 1. 使用realloc的话，新的长度为原始的sdshdr大小加上需要resize的大小，再加上结尾符
+     * 2. 不使用realloc的话，则将新的sdshdr大小加上需要rezise的大小，再加上结尾符
+     */
     size_t newlen = use_realloc ? oldhdrlen+size+1 : hdrlen+size+1;
     int alloc_already_optimal = 0;
+
+    /**
+     * 如果使用了JEMALLOC，则通过je_nallocx来返回newlen的期望分配大小，如果分配的大小和实际分配大小相同，
+     * 则说明当前的内存分配为当前最优解，就无需再使用realloc()进行重新分配。
+    */
     #if defined(USE_JEMALLOC)
         /* je_nallocx returns the expected allocation size for the newlen.
          * We aim to avoid calling realloc() when using Jemalloc if there is no
@@ -357,20 +490,38 @@ sds sdsResize(sds s, size_t size, int would_regrow) {
         alloc_already_optimal = (je_nallocx(newlen, 0) == zmalloc_size(sh));
     #endif
 
+    /**
+     * 如果使用 realloc，并且JEMALLOC的判断没通过的话，就使用s_realloc来重分配内存，并且将s指针指向buf起始位置。
+    */
     if (use_realloc && !alloc_already_optimal) {
         newsh = s_realloc(sh, newlen);
         if (newsh == NULL) return NULL;
         s = (char*)newsh+oldhdrlen;
     } else if (!alloc_already_optimal) {
+        /** 通过s_malloc分配新的空间 */
         newsh = s_malloc(newlen);
         if (newsh == NULL) return NULL;
+
+        /** 然后通过memcpy将s的内存片段拷贝到新的内存空间的buf位置 */
         memcpy((char*)newsh+hdrlen, s, len);
+
+        /** 释放原始的 sdshdr 内存 */
         s_free(sh);
+
+        /** 然后将 s 指针指向新的 sdshdr 的 buf 位置 */
         s = (char*)newsh+hdrlen;
+
+        /** 接着重新设置一下新的 sdshdr 的 flags */
         s[-1] = type;
     }
+
+    /** 将字符串最后一个字符设置为终止符 */
     s[len] = 0;
+
+    /** 重新设置sds的长度 */
     sdssetlen(s, len);
+
+    /** 重新设置sds的buf已分配内存大小 */
     sdssetalloc(s, size);
     return s;
 }

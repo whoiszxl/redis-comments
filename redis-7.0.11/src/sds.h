@@ -42,17 +42,64 @@ extern const char *SDS_NOINIT;
 
 typedef char *sds;
 
+
+/**
+ * sds结构体有五个，sdshdr5,sdshdr8,sdshdr16,sdshdr32,sdshdr64，分别用来存储不同长度的字符串。
+ * 看每个结构体中的变量类型就可知：uint8_t，uint16_t，uint32_t，uint64_t
+ * 
+*/
 /* Note: sdshdr5 is never used, we just access the flags byte directly.
  * However is here to document the layout of type 5 SDS strings. */
+
+/** 
+ * sdshdr5，is never used，从未被使用，但是实际上还是有用过，当Redis的key小于32个字节时，便会使用sdshdr5，因为key是不变的，不会扩容，
+ * 所以为了节省内存，key就可以采用sdshdr5来做，其中省去了len和alloc字段。 
+ * 
+ * 其使用flags字段的高五位存储字符串的长度，低三位存储字符串的类型。
+ */
 struct __attribute__ ((__packed__)) sdshdr5 {
     unsigned char flags; /* 3 lsb of type, and 5 msb of string length */
     char buf[];
 };
+
+/** 
+ * sdshdr8，len、alloc都是uint8_t类型，最大长度为 2^8 -1
+ * 
+ * Redis采用SDS而不采用字符数组的原因
+ * 1. 二进制安全：C语言中字符串以'\0'结尾，如果我们要存储'\0'这个符号的话，就会导致length计算出错。
+ * 
+ * 2. 提升性能：C语言字符串是一个字符数组，每次获取length都需要遍历数组一遍，复杂度为O(N)，CPU性能消耗大，SDS存了len变量，取出长度的复杂度为O(1)
+ * 
+ * 3. 字符串扩缩容：C语言字符串的长度需要在创建时确定，追加字符串的时候需要重新申请一个更大的内存空间再将旧的数据迁移
+ * 到新的新的数组中，SDS则会预先申请一部分内存空间，此时追加字符串时便不需扩容。
+ * 
+ * 结构体中的__attribute__ ((__packed__))的作用：是GCC编译器的扩展语法，用于告诉编译器取消结构体的对齐优化，保证此结构体节省空间，并且可以通过指针前后移动获取到对应字段。
+ * 结构体中的成员将按照其定义的顺序紧密地排列在一起，没有任何填充字节。这样可以确保结构体的大小与成员变量的总大小一致，但也可能导致访问效率的降低。
+ * 
+ * 内存对齐填充是因为有些平台读取内存都是从4字节的位置开始读，每次读取四字节，假如说在一段八字节的内存段上，有一个1字节的c和一个2字节的s的话
+ * 
+ * 未加__attribute__ ((__packed__))的情况
+ * | c|  |  s  |
+ * |__|__|__|__|__|__|__|__|   c占用一个字节，并且会填充一个字节，s则直接占用两个字节，这样一次读取四个字节的时候就能正确读出两个变量
+ * 
+ * 加了__attribute__ ((__packed__))的情况
+ * | c|  s  |
+ * |__|__|__|__|__|__|__|__|   c占用一个字节，不会填充一个字节，s则直接占用两个字节，这样我们在读取sdshdr实例的时候，就可以按照偏移量来获取每个字段
+ */
 struct __attribute__ ((__packed__)) sdshdr8 {
-    uint8_t len; /* used */
-    uint8_t alloc; /* excluding the header and null terminator */
-    unsigned char flags; /* 3 lsb of type, 5 unused bits */
-    char buf[];
+    uint8_t len; /* buf数组目前的长度 */
+    uint8_t alloc; /* buf数组目前已分配的空间长度 */
+
+    /**
+     * sds的类型，char有8bit，低3位表示类型，此类型存储了SDS_TYPE_5|SDS_TYPE_8|SDS_TYPE_16|SDS_TYPE_32|SDS_TYPE_64对应的值
+     * 
+     * 结构体已经标识了类型，此处还有flags标识类型，是为了方便[typedef char *sds;] 这个sds指针获取类型，Redis的sds实际上就是一个
+     * 指向buf[]的的指针，如果要获取类型的话，只需要在sds指针上往前取一字节便可获取到flags类型。也就是此种操作：sds[-1]，此操作可见 sdslen 方法。
+     * 此处要实现这个效果必须加__attribute__ ((__packed__))避免内存对齐导致填充空白字段，不然sds[-1]往前获取一字节的操作就失效了。
+     * 
+    */
+    unsigned char flags; 
+    char buf[]; /* SDS实际的值，字符数组 */
 };
 struct __attribute__ ((__packed__)) sdshdr16 {
     uint16_t len; /* used */
@@ -80,6 +127,16 @@ struct __attribute__ ((__packed__)) sdshdr64 {
 #define SDS_TYPE_64 4
 #define SDS_TYPE_MASK 7
 #define SDS_TYPE_BITS 3
+
+/**
+ * 传入T，假设为8，那么 ##T 需要替换为8，则语句如下：
+ * 
+ * struct sdshdr8 *sh = (void*)((s)-(sizeof(struct sdshdr8)));
+ * 
+ * 当 s 传入，s 为 sdshdr8 中 buf 的指针，此处让 s 减去 sdshdr8 的大小，则是让 s 指针往前移动 size 位，则会移动到 sdshdr8 的首位上。
+
+ * 
+*/
 #define SDS_HDR_VAR(T,s) struct sdshdr##T *sh = (void*)((s)-(sizeof(struct sdshdr##T)));
 #define SDS_HDR(T,s) ((struct sdshdr##T *)((s)-(sizeof(struct sdshdr##T))))
 #define SDS_TYPE_5_LEN(f) ((f)>>SDS_TYPE_BITS)
@@ -101,12 +158,21 @@ static inline size_t sdslen(const sds s) {
     return 0;
 }
 
+/**
+ * 获取 sds 的可用空间
+*/
 static inline size_t sdsavail(const sds s) {
+    /** 通过-1获取到 sds 的类型 */
     unsigned char flags = s[-1];
+
     switch(flags&SDS_TYPE_MASK) {
+
+        /** 如果是 sdshdr5，直接返回0，进行扩容 */
         case SDS_TYPE_5: {
             return 0;
         }
+
+        /** 如果是 sdshdr8，返回 alloc - len，将已分配的内存大小减去当前已使用的内存大小就得到剩余的空间大小 */
         case SDS_TYPE_8: {
             SDS_HDR_VAR(8,s);
             return sh->alloc - sh->len;
