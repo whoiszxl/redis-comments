@@ -7139,7 +7139,9 @@ struct redisCommandArg WATCH_Args[] = {
 {0}
 };
 
-/* Main command table */
+/** 
+ * Main command table 
+ * 命令表，可以通过其中的 redisCommandProc 参数跳转到对应的处理函数 */
 struct redisCommand redisCommandTable[] = {
 /* bitmap */
 {"bitcount","Count set bits in a string","O(N)","2.6.0",CMD_DOC_NONE,NULL,NULL,COMMAND_GROUP_BITMAP,BITCOUNT_History,BITCOUNT_tips,bitcountCommand,-2,CMD_READONLY,ACL_CATEGORY_BITMAP,{{NULL,CMD_KEY_RO|CMD_KEY_ACCESS,KSPEC_BS_INDEX,.bs.index={1},KSPEC_FK_RANGE,.fk.range={0,1,0}}},.args=BITCOUNT_Args},

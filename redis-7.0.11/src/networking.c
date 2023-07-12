@@ -2271,7 +2271,15 @@ int processMultibulkBuffer(client *c) {
         serverAssertWithInfo(c,NULL,c->argc == 0);
 
         /* Multi bulk length cannot be read without a \r\n */
+        /** 
+         * 定位到第一个\r的位置
+         * 
+         * 倘若执行的命令为：set username whoiszxl，则 querybuf 为："*3\r\n$3\r\nset\r\n$8\r\nusername\r\n$8\r\nwhoiszxl\r\n"
+         * 通过strchr寻找 \r 后，newline 指针将定位到第一个 \r, newline 结果为："\r\n$3\r\nset\r\n$8\r\nusername\r\n$8\r\nwhoiszxl\r\n"
+         */
         newline = strchr(c->querybuf+c->qb_pos,'\r');
+
+        /** 若未寻到 \r 回车符，则判断此次读取的行数据是否大于 PROTO_INLINE_MAX_SIZE 行最大的长度，如是则报错。 */
         if (newline == NULL) {
             if (sdslen(c->querybuf)-c->qb_pos > PROTO_INLINE_MAX_SIZE) {
                 addReplyError(c,"Protocol error: too big mbulk count string");
@@ -2280,42 +2288,75 @@ int processMultibulkBuffer(client *c) {
             return C_ERR;
         }
 
-        /* Buffer should also contain \n */
+        /* Buffer should also contain \n 校验：querybuf 中应该包含 \n 符 */
         if (newline-(c->querybuf+c->qb_pos) > (ssize_t)(sdslen(c->querybuf)-c->qb_pos-2))
             return C_ERR;
 
         /* We know for sure there is a whole line since newline != NULL,
          * so go ahead and find out the multi bulk length. */
+        /** 校验 querybuf 起始位置是否是 * 符号 */
         serverAssertWithInfo(c,NULL,c->querybuf[c->qb_pos] == '*');
+
+        /** 校验 * 号后的参数数量是否可转长整型，并判断参数数量是否大于 INT_MAX 整型最大值，如是则报错 */
         ok = string2ll(c->querybuf+1+c->qb_pos,newline-(c->querybuf+1+c->qb_pos),&ll);
         if (!ok || ll > INT_MAX) {
             addReplyError(c,"Protocol error: invalid multibulk length");
             setProtocolError("invalid mbulk count",c);
             return C_ERR;
-        } else if (ll > 10 && authRequired(c)) {
+        } else if (ll > 10 && authRequired(c)) { /** 此处校验参数数量若大于10，且客户端未通过身份认证，也报错 */
             addReplyError(c, "Protocol error: unauthenticated multibulk length");
             setProtocolError("unauth mbulk count", c);
             return C_ERR;
         }
 
+        /** 
+         * 更新读取querybuf的偏移量
+         * 
+         * newline - c->querybuf = 2
+         * newline 本已向后移动两位，则地址比 c->querybuf 大两位，则得2
+         * 
+         * 2 + 2 = 4
+         * 则 c->qb_pos 为 4
+         */
         c->qb_pos = (newline-c->querybuf)+2;
 
         if (ll <= 0) return C_OK;
 
+        /** 将参数数量写入 multibulklen 中 */
         c->multibulklen = ll;
 
         /* Setup argv array on client structure */
+
+        /** 配置 client 的 argv 参数，如果目前存在，则释放内存 */
         if (c->argv) zfree(c->argv);
+
+        /** 初始化参数大小，取传入参数数量与1024的最小值 */
         c->argv_len = min(c->multibulklen, 1024);
+
+        /** 给 client 的 argv 数组分配内存 */
         c->argv = zmalloc(sizeof(robj*)*c->argv_len);
         c->argv_len_sum = 0;
     }
 
+    /** 校验参数数量必须大于0 */
     serverAssertWithInfo(c,NULL,c->multibulklen > 0);
+
+    /** 
+     * 命令若是：set username whoiszxl
+     * 则遍历处理三个参数
+     * multibulklen 存储的值则为 3，减到 0 的时候跳出循环，说明参数处理完毕
+     * */
     while(c->multibulklen) {
         /* Read bulk length if unknown */
         if (c->bulklen == -1) {
+
+            /** 
+             * 继续读取一行，找到 \r 的位置，querybuf + qb_pos 偏移量，则是需要把上面处理掉的部分给截取掉。
+             * 所以这部分可得 newline = "\r\nset\r\n$8\r\nusername\r\n$8\r\nwhoiszxl\r\n"
+              */
             newline = strchr(c->querybuf+c->qb_pos,'\r');
+
+            /** 同样判断 newline 有效性，是否未找到 \r，并且如果长度超过了 inline 最大值的话，报错 */
             if (newline == NULL) {
                 if (sdslen(c->querybuf)-c->qb_pos > PROTO_INLINE_MAX_SIZE) {
                     addReplyError(c,
@@ -2326,10 +2367,14 @@ int processMultibulkBuffer(client *c) {
                 break;
             }
 
-            /* Buffer should also contain \n */
+            /* Buffer should also contain \n 校验：querybuf 中应该包含 \n 符 */
             if (newline-(c->querybuf+c->qb_pos) > (ssize_t)(sdslen(c->querybuf)-c->qb_pos-2))
                 break;
 
+            /**
+             * querybuf = "*3\r\n$3\r\nset\r\n$8\r\nusername\r\n$8\r\nwhoiszxl\r\n"
+             * 接着判断 querybuf 下标为 qb_pos 的位置是否为 $ 符号，如若不是，则报错
+            */
             if (c->querybuf[c->qb_pos] != '$') {
                 addReplyErrorFormat(c,
                     "Protocol error: expected '$', got '%c'",
@@ -2338,18 +2383,21 @@ int processMultibulkBuffer(client *c) {
                 return C_ERR;
             }
 
+
+           /** 校验 $ 号后的参数数量是否可转长整型，并判断参数数量是否大于 proto_max_bulk_len，并且当前server不能是 master 节点 ，如是则报错 */
             ok = string2ll(c->querybuf+c->qb_pos+1,newline-(c->querybuf+c->qb_pos+1),&ll);
             if (!ok || ll < 0 ||
                 (!(c->flags & CLIENT_MASTER) && ll > server.proto_max_bulk_len)) {
                 addReplyError(c,"Protocol error: invalid bulk length");
                 setProtocolError("invalid bulk length",c);
                 return C_ERR;
-            } else if (ll > 16384 && authRequired(c)) {
+            } else if (ll > 16384 && authRequired(c)) { /** 再判断参数的字符长度是否大于 16384，并且是否通过auth校验，否则报错 */
                 addReplyError(c, "Protocol error: unauthenticated bulk length");
                 setProtocolError("unauth bulk length", c);
                 return C_ERR;
             }
 
+            /** 此处再更新 qb_pos 偏移量 */
             c->qb_pos = newline-c->querybuf+2;
             if (!(c->flags & CLIENT_MASTER) && ll >= PROTO_MBULK_BIG_ARG) {
                 /* When the client is not a master client (because master
@@ -2373,16 +2421,42 @@ int processMultibulkBuffer(client *c) {
                     c->querybuf = sdsMakeRoomForNonGreedy(c->querybuf,ll+2-sdslen(c->querybuf));
                 }
             }
+
+            /** 更新bulklen为命令的长度 */
             c->bulklen = ll;
         }
 
         /* Read bulk argument */
+        /**
+         * sdslen(c->querybuf)-c->qb_pos：剩余的未读取的数据长度
+         * (size_t)(c->bulklen+2)：假设命令为 "set username whoiszxl"，则bulklen为 set 的字符串长度 3，+2 是因为批量参数 \r\n 结尾。
+         * 这种情况下说明参数不完整，或者更多数据还未到达缓冲区。
+         * 
+         * 所以，这个判断是为了保证读取的数据是足够完整的，避免出现错误的命令或者读取不完整的情况
+        */
         if (sdslen(c->querybuf)-c->qb_pos < (size_t)(c->bulklen+2)) {
             /* Not enough data (+2 == trailing \r\n) */
             break;
         } else {
             /* Check if we have space in argv, grow if needed */
+            /** 
+             * c->argc 表示当前已经存储的参数数量
+             * c->argv_len 表示 argv 数组的长度
+             * 
+             * 如果 c->argc 大于等于 c->argv_len，说明当前的 argv 数组空间不足以容纳更多的参数。
+             * 在这种情况下，代码会根据一定的策略来扩展 argv 数组的长度。
+             * 
+             * 
+             */
             if (c->argc >= c->argv_len) {
+                /** 
+                 * 计算新的 argv 数组的长度
+                 * 它首先判断当前的 argv_len 是否小于 INT_MAX/2，如果是，则将 argv_len 的值乘以 2 作为新的长度；
+                 * 否则，将 INT_MAX 作为新的长度。这样做是为了避免溢出。
+                 * 
+                 * 接着它会在这个三目运算的值与 c->argc+c->multibulklen 中选择一个最小的值作为 argv_len
+                 * c->argc+c->multibulklen：当前已经存储的参数数量加上还需要存储的参数数量
+                 *  */
                 c->argv_len = min(c->argv_len < INT_MAX/2 ? c->argv_len*2 : INT_MAX, c->argc+c->multibulklen);
                 c->argv = zrealloc(c->argv, sizeof(robj*)*c->argv_len);
             }
@@ -2403,17 +2477,33 @@ int processMultibulkBuffer(client *c) {
                 c->querybuf = sdsnewlen(SDS_NOINIT,c->bulklen+2);
                 sdsclear(c->querybuf);
             } else {
+                /**
+                 * 通过 createStringObject 函数 创建一个字符串对象
+                 * c->querybuf： "*3\r\n$3\r\nset\r\n$8\r\nusername\r\n$8\r\nwhoiszxl\r\n"
+                 * 通过 + c->qb_pos，偏移 8 位得："set\r\n$8\r\nusername\r\n$8\r\nwhoiszxl\r\n"
+                 * createStringObject中传入 c->bulklen 则是 set 的长度，为3，则此方法就是为 set 创建一个字符串对象，并保存到 argv数组对应的下标位置中
+                */
                 c->argv[c->argc++] =
                     createStringObject(c->querybuf+c->qb_pos,c->bulklen);
+                
+                /**
+                 * 参数的len总长度需加上bulklen，也就是set的长度
+                */
                 c->argv_len_sum += c->bulklen;
+
+                /** 接着更新偏移量，就是set的长度加上 \r\n 符号，后续 username，whoiszxl 参数的读取也如此 set 流程一般无二 */
                 c->qb_pos += c->bulklen+2;
             }
+
+            /** 接着重置 bulklen 状态，之前存储的是 set 的长度，接下来要存储 username，whoiszxl 的长度了 */
             c->bulklen = -1;
+
+            /** multibulklen 这个存储了有多少个参数的整型则减一，减到 0 的时候则说明参数已经全部处理完毕了 */
             c->multibulklen--;
         }
     }
 
-    /* We're done when c->multibulk == 0 */
+    /* We're done when c->multibulk == 0 减到 0 的时候则说明参数已经全部处理完毕了 */
     if (c->multibulklen == 0) return C_OK;
 
     /* Still not ready to process the command */

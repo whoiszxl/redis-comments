@@ -1201,7 +1201,16 @@ typedef struct client {
                                user is set to NULL the connection can do
                                anything (admin). */
     int reqtype;            /* Request protocol type: PROTO_REQ_* */
+
+    /**
+     * 表示还需要读取的多个批量参数的数量
+     * 若客户端发送一个命令：set username whoiszxl
+     * 则RESP协议内容为："*3\r\n$3\r\nset\r\n$8\r\nusername\r\n$8\r\nwhoiszxl\r\n"
+     * multibulklen值则为 * 号之后的 3，表示后续还需要再读取三个参数，每读取一个参数后递减，直至为 0 表示所有参数处理完毕。
+     * 
+    */
     int multibulklen;       /* Number of multi bulk arguments left to read. */
+    
     long bulklen;           /* Length of bulk argument in multi bulk request. */
     list *reply;            /* List of reply objects to send to the client. */
     unsigned long long reply_bytes; /* Tot bytes of objects in reply list. */

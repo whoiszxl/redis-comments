@@ -602,6 +602,8 @@ void trimStringObjectIfNeeded(robj *o) {
 /* Try to encode a string object in order to save space */
 robj *tryObjectEncoding(robj *o) {
     long value;
+
+    /** 获取到redisObject中的sds值 */
     sds s = o->ptr;
     size_t len;
 
@@ -609,42 +611,69 @@ robj *tryObjectEncoding(robj *o) {
      * in this function. Other types use encoded memory efficient
      * representations but are handled by the commands implementing
      * the type. */
+    /** 确保这个redisObject是一个String对象 */
     serverAssertWithInfo(NULL,o,o->type == OBJ_STRING);
 
     /* We try some specialized encoding only for objects that are
      * RAW or EMBSTR encoded, in other words objects that are still
      * in represented by an actually array of chars. */
+
+    /** 判断redisObject的encoding是否是RAW or EMBSTR，若不是则直接返回 */
     if (!sdsEncodedObject(o)) return o;
 
     /* It's not safe to encode shared objects: shared objects can be shared
      * everywhere in the "object space" of Redis and may end in places where
      * they are not handled. We handle them only as values in the keyspace. */
+
+    /** 如果redisObject的引用计数大于1，表示robj在多处被引用，robj在此方法内有可能会被修改，所以其他地方有引用的话，可能会造成不安全的影响 */
      if (o->refcount > 1) return o;
 
     /* Check if we can represent this string as a long integer.
      * Note that we are sure that a string larger than 20 chars is not
      * representable as a 32 nor 64 bit integer. */
     len = sdslen(s);
+
+    /** 检查长度是否小于等于20个字符，并且是否可以转成长整型数值 */
     if (len <= 20 && string2l(s,len,&value)) {
         /* This object is encodable as a long. Try to use a shared object.
          * Note that we avoid using shared integers when maxmemory is used
          * because every object needs to have a private LRU field for the LRU
          * algorithm to work well. */
+        
+        /** 
+         * 再判断如下操作: 
+         * 1. Redis的最大内存限制未启用，或者启用了最大内存限制但不禁用共享整数（MAXMEMORY_FLAG_NO_SHARED_INTEGERS标志未设置）。
+         * 2. 转换后的长整型数值大于等于0且小于共享整数的数量（OBJ_SHARED_INTEGERS）。
+        */
         if ((server.maxmemory == 0 ||
             !(server.maxmemory_policy & MAXMEMORY_FLAG_NO_SHARED_INTEGERS)) &&
             value >= 0 &&
             value < OBJ_SHARED_INTEGERS)
         {
+            /** 将原始对象的引用计数减一 */
             decrRefCount(o);
+
+            /** 然后将共享整数对象的引用计数加一 */
             incrRefCount(shared.integers[value]);
+            
+            /** 返回共享整数对象 */
             return shared.integers[value];
         } else {
+            /** 如果无法使用共享对象进行编码，则根据原始对象的编码类型进行不同的处理 */
             if (o->encoding == OBJ_ENCODING_RAW) {
+                /**
+                 * 如果原始对象的编码类型为OBJ_ENCODING_RAW（原始编码），则释放原始对象的SDS字符串空间，
+                 * 将编码类型修改为OBJ_ENCODING_INT（整数编码），并将原始对象的指针指向转换后的长整型数值，然后返回原始对象。
+                */
                 sdsfree(o->ptr);
                 o->encoding = OBJ_ENCODING_INT;
                 o->ptr = (void*) value;
                 return o;
             } else if (o->encoding == OBJ_ENCODING_EMBSTR) {
+                /**
+                 * 如果原始对象的编码类型为OBJ_ENCODING_EMBSTR（嵌入式字符串编码），则释放原始对象的引用计数，然后创建一个新的字符串对象，
+                 * 该对象的值为转换后的长整型数值，并返回新创建的字符串对象。
+                */
                 decrRefCount(o);
                 return createStringObjectFromLongLongForValue(value);
             }

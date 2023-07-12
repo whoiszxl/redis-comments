@@ -1556,7 +1556,14 @@ extern int ProcessingEventsWhileBlocked;
  * keys), but we do need to perform some actions.
  *
  * The most important is freeClientsInAsyncFreeQueue but we also
- * call some other low-risk functions. */
+ * call some other low-risk functions. 
+ * 
+ * 此方法在每次事件循环之前执行，或者在 RDB/AOF 加载期间。
+ * 
+ * RDB/AOF 加载期间调用的话，仅仅会处理一部分逻辑。可以参考 if (ProcessingEventsWhileBlocked) { ... } 这段逻辑
+ * 
+ * aeMain 中调用，则会处理一些不太费性能的逻辑，如过期键删除。
+ * */
 void beforeSleep(struct aeEventLoop *eventLoop) {
     UNUSED(eventLoop);
 
@@ -1601,6 +1608,7 @@ void beforeSleep(struct aeEventLoop *eventLoop) {
 
     /* Run a fast expire cycle (the called function will return
      * ASAP if a fast cycle is not needed). */
+    /** 过期键删除，ACTIVE_EXPIRE_CYCLE_FAST 参数表明需要快速删除过期键 */
     if (server.active_expire_enabled && server.masterhost == NULL)
         activeExpireCycle(ACTIVE_EXPIRE_CYCLE_FAST);
 
@@ -2414,6 +2422,8 @@ int listenToPort(int port, socketFds *sfd) {
             return C_ERR;
         }
         if (server.socket_mark_id > 0) anetSetSockMarkId(NULL, sfd->fd[sfd->count], server.socket_mark_id);
+
+        /** 配置 socket 以非阻塞的方式运行，Redis 使用的是IO多路复用，所以 socket 做读写操作必是非阻塞 */
         anetNonBlock(NULL,sfd->fd[sfd->count]);
         anetCloexec(sfd->fd[sfd->count]);
         sfd->count++;
@@ -2999,6 +3009,10 @@ extern struct redisCommand redisCommandTable[];
 
 /* Populates the Redis Command Table dict from the static table in commands.c
  * which is auto generated from the json files in the commands folder. */
+/**
+ * 将 command.c 中 redisCommandTable[] 数组中的命令填充到一个字典的数据结构中，提升查询效率。
+ * 数组的查询效率为O(N)，效率比较低下，而字典的查询效率是O(1)
+*/
 void populateCommandTable(void) {
     int j;
     struct redisCommand *c;

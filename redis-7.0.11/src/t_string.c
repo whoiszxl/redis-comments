@@ -54,6 +54,8 @@ static int checkStringLength(client *c, long long size, long long append) {
 /* The setGenericCommand() function implements the SET operation with different
  * options and variants. This function is called in order to implement the
  * following commands: SET, SETEX, PSETEX, SETNX, GETSET.
+ * 
+ * 
  *
  * 'flags' changes the behavior of the command (NX, XX or GET, see below).
  *
@@ -202,14 +204,24 @@ static int getExpireMillisecondsOrReply(client *c, robj *expire, int flags, int 
  *
  * Input flags are updated upon parsing the arguments. Unit and expire are updated if there are any
  * EX/EXAT/PX/PXAT arguments. Unit is updated to millisecond if PX/PXAT is set.
+ * 
+ * 解析扩展字符串参数
  */
 int parseExtendedStringArgumentsOrReply(client *c, int *flags, int *unit, robj **expire, int command_type) {
 
+    /** 首先通过判断命令类型来确定起始下标j的值，如果是GET命令，则起始下标为2，SET命令则起始下标为3 */
     int j = command_type == COMMAND_GET ? 2 : 3;
+
+    /** 进入循环，循环扩展字符串参数 */
     for (; j < c->argc; j++) {
+
+        /** 获取对应的扩展参数，若执行 set username xueyou ex 100，则从3的下标获取，*opt 则指向 ex */
         char *opt = c->argv[j]->ptr;
+
+        /** 接着获取下一个参数，通过j == c->argc-1 判断是否还有下一个参数，存在的话则通过 c->argv[j+1] 取出 */
         robj *next = (j == c->argc-1) ? NULL : c->argv[j+1];
 
+        /** 判断第一个命令是否是nx，若是则将flags的第一位设置为1 */
         if ((opt[0] == 'n' || opt[0] == 'N') &&
             (opt[1] == 'x' || opt[1] == 'X') && opt[2] == '\0' &&
             !(*flags & OBJ_SET_XX) && (command_type == COMMAND_SET))
@@ -219,12 +231,28 @@ int parseExtendedStringArgumentsOrReply(client *c, int *flags, int *unit, robj *
                    (opt[1] == 'x' || opt[1] == 'X') && opt[2] == '\0' &&
                    !(*flags & OBJ_SET_NX) && (command_type == COMMAND_SET))
         {
+            /** 判断第一个命令是否是xx，若是则将flags的第二位设置为1 */
             *flags |= OBJ_SET_XX;
         } else if ((opt[0] == 'g' || opt[0] == 'G') &&
                    (opt[1] == 'e' || opt[1] == 'E') &&
                    (opt[2] == 't' || opt[2] == 'T') && opt[3] == '\0' &&
                    (command_type == COMMAND_SET))
         {
+            /** 
+             * 判断第一个命令是否是get，若是则将flags的第六位设置为1，其他判断依次类推，都是Redis的通用扩展参数
+             * 
+             * 详见：https://redis.io/commands/set/
+             * 
+             * OBJ_SET_NX：表示设置NX标志，即只在键不存在时才设置。
+             * OBJ_SET_XX：表示设置XX标志，即只在键已经存在时才设置。
+             * OBJ_SET_GET：表示设置GET标志，即返回键的值。
+             * OBJ_KEEPTTL：表示设置KEEPTTL标志，即保留键的过期时间。
+             * OBJ_PERSIST：表示设置PERSIST标志，即移除键的过期时间。
+             * OBJ_EX：表示设置EX标志，即设置以秒为单位的过期时间。
+             * OBJ_PX：表示设置PX标志，即设置以毫秒为单位的过期时间。
+             * OBJ_EXAT：表示设置EXAT标志，即设置以秒为单位的绝对过期时间。
+             * OBJ_PXAT：表示设置PXAT标志，即设置以毫秒为单位的绝对过期时间。
+             */
             *flags |= OBJ_SET_GET;
         } else if (!strcasecmp(opt, "KEEPTTL") && !(*flags & OBJ_PERSIST) &&
             !(*flags & OBJ_EX) && !(*flags & OBJ_EXAT) &&
@@ -289,16 +317,23 @@ int parseExtendedStringArgumentsOrReply(client *c, int *flags, int *unit, robj *
 
 /* SET key value [NX] [XX] [KEEPTTL] [GET] [EX <seconds>] [PX <milliseconds>]
  *     [EXAT <seconds-timestamp>][PXAT <milliseconds-timestamp>] */
+/**
+ * set命令功能实现
+*/
 void setCommand(client *c) {
-    robj *expire = NULL;
-    int unit = UNIT_SECONDS;
-    int flags = OBJ_NO_FLAGS;
+    robj *expire = NULL; /** 记录过期时间 */
+    int unit = UNIT_SECONDS; /** 记录过期时间的单位 */
+    int flags = OBJ_NO_FLAGS; /** NO_FLAGS 表示没有额外标志 */
 
+    /** 解析扩展的字符串参数，并将解析结果存储在flags、unit和expire变量中。如果解析失败，则返回。 */
     if (parseExtendedStringArgumentsOrReply(c,&flags,&unit,&expire,COMMAND_SET) != C_OK) {
         return;
     }
 
+    /** 对第三个参数（即值）进行对象编码，以提高存储效率。 */
     c->argv[2] = tryObjectEncoding(c->argv[2]);
+
+    /** 调用setGenericCommand函数，将flags、c->argv[1]（即键）、c->argv[2]（即值）、expire、unit以及其他参数传递给该函数，从而在Redis中设置键值对。 */
     setGenericCommand(c,flags,c->argv[1],c->argv[2],expire,unit,NULL,NULL);
 }
 
