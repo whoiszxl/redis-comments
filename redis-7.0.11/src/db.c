@@ -1529,14 +1529,20 @@ int removeExpire(redisDb *db, robj *key) {
 /* Set an expire to the specified key. If the expire is set in the context
  * of an user calling a command 'c' is the client, otherwise 'c' is set
  * to NULL. The 'when' parameter is the absolute unix time in milliseconds
- * after which the key will no longer be considered valid. */
+ * after which the key will no longer be considered valid. 
+ * 给指定的 key 设置一个过期时间 */
 void setExpire(client *c, redisDb *db, robj *key, long long when) {
     dictEntry *kde, *de;
 
     /* Reuse the sds from the main dict in the expire dict */
+    /** 从 db 的字典中找到对应 key 的字典节点 */
     kde = dictFind(db->dict,key->ptr);
     serverAssertWithInfo(NULL,key,kde != NULL);
+
+    /** 然后将当前的字典key设置到 expires 字典中 */
     de = dictAddOrFind(db->expires,dictGetKey(kde));
+    
+    /** 将过期时间设置到 expires 字典中对应的 key 上，when 的时间是执行命令的时间戳加上过期时间的毫秒数 */
     dictSetSignedIntegerVal(de,when);
 
     int writable_slave = server.masterhost && server.repl_slave_ro == 0;

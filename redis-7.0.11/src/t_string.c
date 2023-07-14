@@ -70,34 +70,52 @@ static int checkStringLength(client *c, long long size, long long append) {
  * If abort_reply is NULL, "$-1" is used. */
 
 #define OBJ_NO_FLAGS 0
-#define OBJ_SET_NX (1<<0)          /* Set if key not exists. */
-#define OBJ_SET_XX (1<<1)          /* Set if key exists. */
-#define OBJ_EX (1<<2)              /* Set if time in seconds is given */
-#define OBJ_PX (1<<3)              /* Set if time in ms in given */
-#define OBJ_KEEPTTL (1<<4)         /* Set and keep the ttl */
-#define OBJ_SET_GET (1<<5)         /* Set if want to get key before set */
-#define OBJ_EXAT (1<<6)            /* Set if timestamp in second is given */
-#define OBJ_PXAT (1<<7)            /* Set if timestamp in ms is given */
-#define OBJ_PERSIST (1<<8)         /* Set if we need to remove the ttl */
+#define OBJ_SET_NX (1<<0)          /* 键不存在的时候设置键值 Set if key not exists. */
+#define OBJ_SET_XX (1<<1)          /* 键存在的时候设置键值 Set if key exists. */
+#define OBJ_EX (1<<2)              /* 以秒为单位设置过期时间 Set if time in seconds is given */
+#define OBJ_PX (1<<3)              /* 以毫秒为单位设置过期时间 Set if time in ms in given */
+#define OBJ_KEEPTTL (1<<4)         /* 保留设置前指定键的生存时间 Set and keep the ttl */
+#define OBJ_SET_GET (1<<5)         /* 返回指定键原本的值，若键不存在时返回nil Set if want to get key before set */
+#define OBJ_EXAT (1<<6)            /* 设置以秒为单位的UNIX时间戳所对应的时间为过期时间 Set if timestamp in second is given */
+#define OBJ_PXAT (1<<7)            /* 设置以毫秒为单位的UNIX时间戳所对应的时间为过期时间 Set if timestamp in ms is given */
+#define OBJ_PERSIST (1<<8)         /* 移除ttl的过期时间 Set if we need to remove the ttl */
 
 /* Forward declaration */
 static int getExpireMillisecondsOrReply(client *c, robj *expire, int flags, int unit, long long *milliseconds);
 
+/**
+ * 用于实现 SET 操作的通用实现，根据传入不同的参数来设置键值对、设置键值对的过期时间等操作
+ * 
+ * c: 客户端
+ * flags: 参考parseExtendedStringArgumentsOrReply里的注释，通过每一位的值来确定执行命令中有哪些参数
+ * key: 键
+ * val: 值
+ * expire: 过期时间
+ * unit: 单位
+*/
 void setGenericCommand(client *c, int flags, robj *key, robj *val, robj *expire, int unit, robj *ok_reply, robj *abort_reply) {
     long long milliseconds = 0; /* initialized to avoid any harmness warning */
     int found = 0;
     int setkey_flags = 0;
 
+    /** 判断是否传入了过期参数，如果传入了，并且将其转换为毫秒单位的时间戳保存到 milliseconds 中，如果转换失败，则直接返回。 */
     if (expire && getExpireMillisecondsOrReply(c, expire, flags, unit, &milliseconds) != C_OK) {
         return;
     }
 
+    /** 判断 set 命令中是否带有 get 参数，如若带有则执行 getGenericCommand 获取目前 key 对应的 value 值，并写到客户端的输出缓冲区中 */
     if (flags & OBJ_SET_GET) {
         if (getGenericCommand(c) == C_ERR) return;
     }
 
+    /** 通过 lookupKeyWrite 从 db 中寻找指定 key */
     found = (lookupKeyWrite(c->db,key) != NULL);
 
+    /** 
+     * 此判断对应 NX 和 XX 的功能实现
+     * 1. 如果命令中携带了 nx 参数，并且能够找到这个 key 的 value 值，则阻断 set 的剩余流程
+     * 2. 如果命令中携带了 xx 参数，并且不能找到这个 key 的 value 值，则阻断 set 的剩余流程
+     * */
     if ((flags & OBJ_SET_NX && found) ||
         (flags & OBJ_SET_XX && !found))
     {
@@ -107,35 +125,92 @@ void setGenericCommand(client *c, int flags, robj *key, robj *val, robj *expire,
         return;
     }
 
+    /** 如果命令中含有 keepttl 参数，则将 setkey_flags 二进制的第一位设置为 1 */
     setkey_flags |= (flags & OBJ_KEEPTTL) ? SETKEY_KEEPTTL : 0;
+    /** 如果 key 所对应的 value 已经存在，则将 setkey_flags 二进制的第三位设置为 1，否则将 setkey_flags 二进制的第四位设置为 1 */
     setkey_flags |= found ? SETKEY_ALREADY_EXIST : SETKEY_DOESNT_EXIST;
 
+    /** 将 kv 键值对保存到 db 中，并根据 setkey_flags 中的逻辑 */
     setKey(c,c->db,key,val,setkey_flags);
+
+    /** 每当有对数据库进行修改的操作（例如设置键值对、删除键等），dirty 计数器自增加一 */
     server.dirty++;
+
+    /**
+     * keyspace通知，详见：https://redis.io/docs/manual/keyspace-notifications/
+     * 
+     * 键空间通知可以在键被修改、过期、删除等操作发生时通知客户端。通过启用键空间事件，客户端可以订阅感兴趣的键操作，并根据事件进行相应的处理。
+     * 
+     * 通过在 redis.conf 中可以开启此机制，配置参数 notify-keyspace-events 可以开启。
+     * 
+     * notify-keyspace-events 参数是一个字符串，用于指定要通知的事件类型。每个字符代表一个事件类型，具体含义如下：
+     * K：Keyspace 事件。
+     * E：Keyevent 事件。
+     * g：通用命令，如 DEL、EXPIRE、RENAME 等。
+     * $：字符串命令。
+     * l：列表命令。
+     * s：集合命令。
+     * h：哈希命令。
+     * z：有序集合命令。
+     * t：流命令（Redis 5.0 及以上版本）。
+     * d：模块键类型事件（Redis 5.0 及以上版本）。
+     * x：键过期事件。
+     * e：键驱逐事件（由于内存限制而删除键）。
+     * m：键丢失事件（尝试访问不存在的键）。
+     * n：新键事件（注意：不包括在 'A' 类中）。
+     * A：包含所有事件类型的别名，即 "g$lshztxed"，表示除了键丢失和新键事件外的所有事件。
+     * 
+     * 若是在 redis.conf 中配置 notify-keyspace-events "AKE" 此参数，则我在执行 set username whoiszxl 时，
+     * 便会通过 notifyKeyspaceEvent 发出一个订阅消息，通过 SUBSCRIBE "__keyspace@0__:username" 便可以获取到对应的事件通知，
+     * 或者通过 SUBSCRIBE "__keyevent@0__:set" 也可以获取所有 key 的 SET 事件。
+     * 
+     * 具体根据情况而定，可根据 keyspace 或是 keyevent 来选择对应策略。
+     * 
+    */
     notifyKeyspaceEvent(NOTIFY_STRING,"set",key,c->db->id);
 
+    /** 判断是否带了 expire 过期参数 */
     if (expire) {
+        /** 将 key 与过期时间添加到 expires 字典中 */
         setExpire(c,c->db,key,milliseconds);
         /* Propagate as SET Key Value PXAT millisecond-timestamp if there is
          * EX/PX/EXAT/PXAT flag. */
+
+        /** 如果设置了 EX/PX/EXAT/PXAT 相关参数，则会将命令重写为 "SET Key Value PXAT 毫秒时间戳" 的方式传播发送给客户端 */
+
+        /** 创建一个表示毫秒时间戳的字符串对象 milliseconds_obj */
         robj *milliseconds_obj = createStringObjectFromLongLong(milliseconds);
+
+        /** 重写客户端命令 */
         rewriteClientCommandVector(c, 5, shared.set, key, val, shared.pxat, milliseconds_obj);
+
+        /** 减去 milliseconds_obj 的引用计数，确保正确释放内存 */
         decrRefCount(milliseconds_obj);
+
+        /** 发送 expire 订阅事件 */
         notifyKeyspaceEvent(NOTIFY_GENERIC,"expire",key,c->db->id);
     }
 
+    /** 若命令中无 get 参数，则直接返回OK */
     if (!(flags & OBJ_SET_GET)) {
         addReply(c, ok_reply ? ok_reply : shared.ok);
     }
 
+    /**
+     * 若命令中有 get 参数，并且没有设置过期时间，则执行如下逻辑，逻辑很简单，就是把 GET 参数排除掉，
+     * 然后把排除掉 GET 参数的命令的参数替换掉 client 中的，如 c->argv，c->argc
+     * 
+     * 比如说命令为：set username whoiszxl get，c->argc 便会从 4 更新为 3 
+    */
     /* Propagate without the GET argument (Isn't needed if we had expire since in that case we completely re-written the command argv) */
     if ((flags & OBJ_SET_GET) && !expire) {
         int argc = 0;
-        int j;
+        int j;        
         robj **argv = zmalloc((c->argc-1)*sizeof(robj*));
         for (j=0; j < c->argc; j++) {
             char *a = c->argv[j]->ptr;
             /* Skip GET which may be repeated multiple times. */
+            /** 此处便判断参数中是否有 get 或者 GET，有则跳过 */
             if (j >= 3 &&
                 (a[0] == 'g' || a[0] == 'G') &&
                 (a[1] == 'e' || a[1] == 'E') &&
@@ -333,7 +408,10 @@ void setCommand(client *c) {
     /** 对第三个参数（即值）进行对象编码，以提高存储效率。 */
     c->argv[2] = tryObjectEncoding(c->argv[2]);
 
-    /** 调用setGenericCommand函数，将flags、c->argv[1]（即键）、c->argv[2]（即值）、expire、unit以及其他参数传递给该函数，从而在Redis中设置键值对。 */
+    /** 
+     * 调用setGenericCommand函数，将flags、c->argv[1]（即键）、c->argv[2]（即值）、expire、unit以及
+     * 其他参数传递给该函数，从而在Redis中设置键值对。 
+     * */
     setGenericCommand(c,flags,c->argv[1],c->argv[2],expire,unit,NULL,NULL);
 }
 
