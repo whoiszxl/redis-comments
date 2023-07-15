@@ -57,6 +57,9 @@ make 命令之后，携带了一部分参数，CFLAGS 是一个环境变量，�
 
 倘若是发布 Redis 到生产环境使用，则无需添加这些参数，直接执行 `make` 即可。
 
+**注意事项：**
+如果执行 `make CFLAGS="-g -O0"` 后，运行 `./src/redis-server` 后报错：`Segmentation fault (core dumped)`，可以执行 `make distclean` 清理目前的编译结果，再执行 `make CFLAGS="-g -O0" MALLOC=libc` 进行编译即可解决此问题，`MALLOC=libc` 参数为强制指定 `libc` 为 `malloc` 做内存分配。
+
 
 在命令行中运行编译好的 Redis 服务:
 ```bash
