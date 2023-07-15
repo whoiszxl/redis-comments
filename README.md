@@ -4,18 +4,6 @@
 
 在掌握了 Redis 基本的原理与应用之后，我们便可将其源码构建起来，通过 Debug 的方式来逐行分析底层的一些设计实现，正本溯源，而不仅仅是浮于表面，只知其一不知其二。
 
-## Redis架构概览
-> TODO
-
-## Redis源码概览
-
-> TODO
-
-| 列1标题  | 列2标题 | 列3标题 |
-|---------|---------|---------|
-| 单元格1 | 单元格2 | 单元格3 |
-| 单元格4 | 单元格5 | 单元格6 |
-
 ## Redis源码阅读环境构建
 此处我们采用操作系统 [Ubuntu 20.04.4 LTS](https://releases.ubuntu.com/focal/) 来构建 Redis 源码阅读环境，使用其他类 Unix 系统比如 MacOS 也可以按照此操作来进行构建。Windows 系统则建议安装一个 VirtualBox 或者 vmware 虚拟机来构建。
 
@@ -135,16 +123,22 @@ clion-2023.1.4
 ![readme_2](assets/readme_2.png)
 
 
-接着选择到 redis-server 这一项，直接点击 debug 运行按钮，则会弹出一个配置框，此处需要在 Executable 中选择我们编译好的 redis-server 程序，最后，点击最下方的 debug 按钮来运行 redis-server 程序。
+接着选择到 redis-server 这一项，直接点击 debug 运行按钮，则会弹出一个配置框，此处需要在 Executable 中选择我们编译好的 redis-server 程序，最后，点击最下方的 debug 按钮来运行 redis-server 程序。此方式运行则会采用默认的配置，如需要采用自定义配置，则可在 Program arguments 中填入 redis.conf 的绝对路径。
 
 ![readme_3](assets/readme_3.png)
 
 
+### 断点调试
+当环境构建好后，便可打上断点调试代码。此处以执行一个 set 命令来做断点调试。
 
+首先，找到 `t_string.c` 这个代码文件，这个文件专门用来处理 `String` 相关的命令。我们需要在一个 `setCommand` 函数里打上一个断点。
 
+![readme_4](assets/readme_4.png)
 
+然后，我们可以将 `redis-cli` 启动，用以执行 set 命令。我们可以选择执行运行 `redis-cli` 程序，也可以在 `Clion` 中选择上一步 Debug 调试 redis-server 的逻辑一样，通过 Debug 的方式将 `redis-cli` 运行起来。
 
+运行起来之后，便可执行一个 set 命令，如：`set username whoiszxl`，则我们可以看到 `Clion` 中的断点已经打进去了。断点打上去之后，将鼠标指针指向对应实例之后，便可以看到实例的相关信息。
 
-
-
+如图所示，将鼠标指针指向 `client` 指针后，我们便可以看到 `client` 实例的相关信息，如 `querybuf` 中可以看到客户端发送过来的 `RESP` 协议的消息体，`cmd` 中可以看到 `set` 命令的相关描述，如 `complexity` 字段中可看到其命令的时间复杂度。
+![readme_5](assets/readme_5.png)
 
