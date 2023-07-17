@@ -155,9 +155,9 @@ clion-2023.1.4
 从 `Redis` 来说，我们要分析清楚这个技术的基本概念、用途以及特点，只需要从[官网](https://redis.io/)就能得到结果。
 
 官网简介如下：
-```
-Redis是一个开源的内存数据存储系统，被数百万开发者用作数据库、缓存、流处理引擎和消息中间件。它提供了一种快速、高性能的数据存储和处理解决方案。
-```
+
+> Redis是一个开源的内存数据存储系统，被数百万开发者用作数据库、缓存、流处理引擎和消息中间件。它提供了一种快速、高性能的数据存储和处理解决方案。
+
 
 核心特性如下：
 * 内存中的数据结构：Redis被广泛称为“数据结构服务器”，支持字符串、哈希、列表、集合、有序集合、流等多种数据结构。
@@ -189,32 +189,33 @@ Redis是一个开源的内存数据存储系统，被数百万开发者用作数
 获取到对应的源码后，首先应该做的便是对源码做一个**整体分析**。读源码最忌讳的便是漫无目的的阅读，所以我们先需要分析一下 redis-7.0.11 这个目录下，有一些什么目录，有一些什么源码文件，得到一个大致的认识之后，我们再去读源码时才会有路可寻。
 
 做整体分析，我们也得掌握一定的方法。首先，最好的方法便是阅读源码中自带的注释或者 README 文件。举例来说，Redis 源码的一级目录下有一个 deps 文件夹，打开之后便有一个 [README.md](https://github.com/whoiszxl/redis-comments/blob/master/redis-7.0.11/deps/README.md) 文件，此文件开头内容如下：
-```
-This directory contains all Redis dependencies, except for the libc that should be provided by the operating system.
-
-Jemalloc is our memory allocator, used as replacement for libc malloc on Linux by default. It has good performances and excellent fragmentation behavior. This component is upgraded from time to time.
-hiredis is the official C client library for Redis. It is used by redis-cli, redis-benchmark and Redis Sentinel. It is part of the Redis official ecosystem but is developed externally from the Redis repository, so we just upgrade it as needed.
-linenoise is a readline replacement. It is developed by the same authors of Redis but is managed as a separated project and updated as needed.
-lua is Lua 5.1 with minor changes for security and additional libraries.
-hdr_histogram Used for per-command latency tracking histograms.
-```
+> This directory contains all Redis dependencies, except for the libc that should be provided by the operating system.
+>
+> Jemalloc is our memory allocator, used as replacement for libc malloc on Linux by default. It has good performances and excellent fragmentation behavior. This component is upgraded from time to time.
+>
+> hiredis is the official C client library for Redis. It is used by redis-cli, redis-benchmark and Redis Sentinel. It is part of the Redis official ecosystem but is developed externally from the Redis repository, so we just upgrade it as needed.
+>
+> linenoise is a readline replacement. It is developed by the same authors of Redis but is managed as a separated project and updated as needed.
+>
+> lua is Lua 5.1 with minor changes for security and additional libraries.
+>
+> hdr_histogram Used for per-command latency tracking histograms.
 
 翻译如下：
-```
-该目录包含了 Redis 的所有依赖项，除了操作系统应提供的 libc（C 标准库）。
 
-Jemalloc：作为内存分配器，它替代了 Linux 默认的 libc malloc。Jemalloc 具有良好的性能和优秀的内存碎片处理能力。我们定期升级此组件以获得更好的性能和功能。
+> 该目录包含了 Redis 的所有依赖项，除了操作系统应提供的 libc（C 标准库）。
+> 
+> Jemalloc：作为内存分配器，它替代了 Linux 默认的 libc malloc。Jemalloc 具有良好的性能和优秀的内存碎片处理能力。我们定期升级此组件以获得更好的性能和功能。
+>
+> Hiredis：这是 Redis 的官方 C 客户端库。它被 redis-cli、redis-benchmark 和 Redis Sentinel 等工具所使用。尽管它是 Redis 生态系统的一部分，但是它是在 Redis 主代码库之外进行开发的。我们根据需要升级它以引入改进和修复 bug。
+>
+> Linenoise：Linenoise 是一个 readline 的替代品，提供了交互式命令行界面的行编辑功能。它由 Redis 的作者开发，但作为一个独立的项目进行管理，并根据需要进行更新。
+>
+> Lua：Redis 包含了 Lua 5.1 版本，并进行了一些安全修改和附加库的添加。Lua 是一种强大的脚本语言，用于在 Redis 中进行服务器端脚本编写，实现自定义命令和高级数据处理功能。
+>
+>hdr_histogram：该依赖项用于跟踪每个命令的延迟，并生成直方图。它帮助测量和分析 Redis 命令的执行时间，对于性能监控和优化非常有用。
 
-Hiredis：这是 Redis 的官方 C 客户端库。它被 redis-cli、redis-benchmark 和 Redis Sentinel 等工具所使用。尽管它是 Redis 生态系统的一部分，但是它是在 Redis 主代码库之外进行开发的。我们根据需要升级它以引入改进和修复 bug。
-
-Linenoise：Linenoise 是一个 readline 的替代品，提供了交互式命令行界面的行编辑功能。它由 Redis 的作者开发，但作为一个独立的项目进行管理，并根据需要进行更新。
-
-Lua：Redis 包含了 Lua 5.1 版本，并进行了一些安全修改和附加库的添加。Lua 是一种强大的脚本语言，用于在 Redis 中进行服务器端脚本编写，实现自定义命令和高级数据处理功能。
-
-hdr_histogram：该依赖项用于跟踪每个命令的延迟，并生成直方图。它帮助测量和分析 Redis 命令的执行时间，对于性能监控和优化非常有用。
-```
-
-通过此 `README.md` 文件，我们不难得出 `deps` 文件夹的作用是做什么的。所以，我们要整体分析 Redis 架构的话，通过此种方式便能得出一二。
+通过此 `README.md` 文件，我们不难得出 `deps` 文件夹的作用是做什么的。再比如说 Redis Github 主页的 `README.md` 文件，其中详细描述了各大核心文件的用途。所以，我们要整体分析 Redis 架构的话，通过此种方式便能得出一二。
 
 Redis 大致的源代码分析图可参照此 README 最上方的Redis源码整体架构。
 
@@ -226,4 +227,174 @@ Redis 大致的源代码分析图可参照此 README 最上方的Redis源码整�
 * 核心模块：根据中间件的功能和设计，可以选择阅读其中的核心模块。对于 Redis 来说，核心模块包括各大数据类型、网络通信模块、命令解析与执行模块等。选择其中一个核心模块作为入口开始阅读，可以深入了解该模块的实现原理和关键算法。
 * 命令执行：根据一条命令的执行，分析一条命令从 Client 端发送到 Server 端的执行过程。通过这种方式可以从命令解析、网络通信、命令执行、数据类型皆有涉及，当整条链路分析完成之后，其大部分的源码便已是通读了，因为在执行不同的命令时，命令解析、网络通信、命令执行等逻辑都是一致的，不同的仅仅是数据结构上的不同。
 
-此文档中便采用 `命令执行` 的方式来分析如何阅读源码。
+我们这里采用 `命令执行` 的方式来分析如何阅读源码。
+
+
+### 命令执行
+这里我们便通过一条命令执行了解 Redis 的命令执行流程。
+
+在我们还没开始阅读源码的时候，我们可以通过猜测的方式来了解 Redis 执行一条命令的工作机制。作为一名 Web 开发者，当我们在开发完成一个 Web 程序的时候，以 Java 的 SpringBoot 程序为例，我们会通过 `maven` 这个构建工具来将 SpringBoot 程序打包成 Jar 包，然后我们便可通过 `java -jar xx.jar` 此命令来将 Web 程序运行起来。
+
+此逻辑其实和 Redis 构建是类似的，`make` 命令则与 `maven` 类似，执行 `make` 命令后，其便会将 C 语言编写的一系列源码打包成可执行文件，如：`redis-server, redis-cli` 等。此时，我们通过直接运行 `redis-server` 程序，便可直接将 Redis 服务运行起来，此方式则和我们通过 `java` 命令将 SpringBoot 程序运行起来的逻辑是非常相似的。
+
+当一个 SpringBoot 程序运行起来之后，我们便可通过浏览器、PostMan、CURL 等工具来访问 SpringBoot 程序暴露出来的 HTTP 接口，或者通过 VUE、React等前端框架来调用程序中的 HTTP 接口。
+
+此逻辑也与 `redis-server` 的逻辑是类似的，当服务运行起来的时候，我们可通过 redis-cli、Another Redis Desktop Manager 等客户端工具来执行对应的命令，也可通过 Java、Golang、NodeJS 等编程语言来执行对应的命令。此方式和我们 SpringBoot 程序暴露 HTTP 接口的方式也是非常类似的，只不过 `redis-server` 是通过 TCP 的方式将一些 SET/GET/EXPIRED 命令暴露出来。当我们通过 Client 程序执行其命令的时候，Server 接收到命令，也会通过与 SpringBoot 类似的原理，将命令按照一定规则转发到对应的方法上。
+
+如下 SpringBoot 接口，当我们通过 POST 请求访问 `http://localhost:80/login` 的时候，请求会通过一定逻辑转发到这个方法里面。
+```java
+    @SaIgnore
+    @Operation(summary = "管理员后台登录", description = "根据管理员用户名和密码进行登录")
+    @PostMapping("/login")
+    public ResponseResult<String> login(@Validated @RequestBody LoginByPasswordCommand command) {
+        //DO SOMETHING
+        return ResponseResult.buildSuccess(token);
+    }
+```
+
+Redis 也一样，当我们执行 `set username whoiszxl` 命令时，命令会通过一定逻辑转发到这个 `setCommand` 函数里面。
+
+```c
+void setCommand(client *c) {
+    
+    /** 省略部分代码....... */
+    
+    /** 
+     * 调用setGenericCommand函数，将flags、c->argv[1]（即键）、c->argv[2]（即值）、expire、unit以及
+     * 其他参数传递给该函数，从而在Redis中设置键值对。 
+     * */
+    setGenericCommand(c,flags,c->argv[1],c->argv[2],expire,unit,NULL,NULL);
+}
+```
+
+所以，Redis 这种 C/S 架构的程序，与 SpringBoot 这种 B/S 架构的程序，整体逻辑上也是相差无几的。我们在 Debug 一个 Web 程序的时候，直接在 Controller 接口上打上断点便可，那我们要 Debug 一个 Redis 程序，那么也是可以在对应函数上打上断点就可。我们此处以一条 SET 命令来执行，那么在 `setCommand` 方法上打上断点即可。
+
+断点打上之后，当客户端发送一条命令到服务端时，请求便会进入 `setCommand` 上的断点，接着我们便可从左下方 Debugger 栏目中看到这个 SET 命令执行的整条链路，如图所示。
+
+![readme_7](assets/readme_7.png)
+
+通过 `Parallel Stacks` 中，我们可以得到如下的并行调用栈信息。通过双击每个函数的名称便能够跳转到对应代码位置。
+
+![readme_8](assets/readme_8.png)
+
+更多使用 Clion 进行 Debug 的方式可以通过官网进行查看：[https://www.jetbrains.com/help/clion/debugging-code.html?keymap=primary_eclipse#useful-debugger-shortcuts](https://www.jetbrains.com/help/clion/debugging-code.html?keymap=primary_eclipse#useful-debugger-shortcuts)
+
+### 流程分析
+接下来我们便来分析一下这个调用栈的整个链路。
+
+#### aeMain
+首先定位到 `main` 函数中，可见此时跳转到的是 `server.c` 文件下的 `main()` 函数的 `aeMain` 函数中。此处代码的作用是要运行一个事件处理器，专门来处理各种事件。在 `深入学习` 阶段，我们是需要掌握 Redis 单线程运行里一个比较核心的概念，就是：`I/O 多路复用`。这一块的代码，我们需要理解透的话，那就必须将此概念掌握后才能够更好的看懂。
+
+```c
+int main(int argc, char **argv) {
+
+    /** 省略部分代码 */
+
+    /* 【核心】：运行ae事件处理器，直到服务关闭为止 */
+    aeMain(server.el);
+    
+    /** 省略部分代码 */
+}
+```
+
+这里用一个生活中的案例，将 `I/O 多路复用` 的思想简单阐述一下。
+
+假设一个餐厅里只有你一名服务员，餐厅里有多个餐位，每个桌子有不同的顾客。你需要同时处理多个餐位的点餐、上菜、结账等多种需求。如果采用单线程的逻辑，那么你以此只能服务一个餐位，必须等这个餐位点餐、上菜、结账整套流程走完之后，你才能够去服务下一个餐位，这种方式的效率显而易见会是非常低下。
+
+那么如果采用IO多路复用的方式来处理顾客的需求的话，在这个场景中，服务员就相当于 IO 多路复用这个机制，你可以同时去监视多个餐位的需求，一但某个餐位有需求之后，顾客会举手示意让你过来处理点餐、上菜、结账等需求，你便可立即去处理此需求，并不需要等待其他餐位上的需求是否整个流程处理完。
+
+那么 Redis 采用 `I/O 多路复用` 思想来做的话，单线程也就能够同时处理多个请求了。在 Linux 系统下，默认采用的 `I/O 多路复用` 模式是 `epoll`，此逻辑可见 `ae.c` 开头的代码。
+
+我们简单来看一下什么是 `epoll` 逻辑，`select` 和 `poll` 我们就不多赘述了。还是拿餐厅服务员的案例来说一下这个 `epoll` 的逻辑。假如我是一名服务员，我的能力只允许我同时处理100个餐位的需求，那么我可以弄一个系统记录下我能够处理的100个餐位的位置。当有顾客进入餐厅后，我便可以将顾客分配到不同的餐位上，并在系统上记录下顾客与餐位的对应关系，并且我们会在餐位上提供对应的按钮，当顾客在餐位上有点餐、上菜、结账等需求之后，只要按对应的按钮之后，作为服务员的我就可以根据系统的安排来有序的进行对应的操作。
+
+Linux 下的 `epoll` 便与此案例类似，其逻辑如下：
+
+1. 首先，`epoll` 提供一个创建函数 `epoll_create(size)`，执行后系统内核会分配一块内存空间，其中的 `size` 参数则仅仅是一个提示，用来预估事件监听的数量，实际上内核会根据需要来动态调整 epoll 实例的大小，以适应实际的事件数量。翻译成餐厅服务员的案例，便是我通过 `epoll_create(100)` 的执行，创建了一个系统，其记录了我能够同时处理100个餐位的需求，也就是100个事件需求。但是呢，人是具有潜能的，来了150个需求，`epoll` 也能顺利接手，因为传入的 `size` 值并不是很管用。
+
+2. 当 `epoll` 创建好了之后，便可以通过 `epoll_ctl` 这个函数将我们要监听的 `fd文件描述符` 维护到 `epoll` 中，`epoll` 里则通过红黑树这个数据结构来高效维护我们传入的 fd 集合。这里翻译过来，意思就是餐厅来顾客了，我便需要调用 `epoll_ctl` 这个函数将这个顾客分配到一个餐位上，并录入我的系统中，表示我可以处理顾客的服务了，这个处理关系的建立，其实就是上述所说的 `fd文件描述符`。
+
+> fd文件描述符：Linux系统下万物皆文件，包括普通文件、键盘、鼠标、硬盘、Socket 等等，所有的抽象成文件，并提供统一的接口，以此方便程序调用。所以，上述一个 TCP 的连接，便也是一个 `fd`
+ 
+3. 当顾客的联系建立好后，也就是 `fd` 添加到 `epoll` 中之后，便可以通过 `epoll_wait` 来获取对应的就绪事件，系统内核会去检查 `epoll` 中就绪列表，如过就绪列表为空则进入阻塞，否则直接返回就绪的事件。当然，这里可以指定阻塞的时间，假如说指定 `timeout` 参数为 -1，则无限等待，为 正数 则等待对应的毫秒数。这里翻译过来的意思就是作为服务员的我，我会按照一定规则去看一下系统，如果有点餐、上菜、结账的需求过来，我便会将这些需求事件按照先后顺序打印一个单子，然后再按照顺序去一件一件事情处理。假如说系统暂时没有需求过来，那么我就会按照 `timeout` 的规则，会在系统前等待多久，如果是无限等待，那我便会在系统前一直等顾客新的需求过来。
+
+回归正题，回归到 `aeMain(server.el)` 的代码中，这里我们便可分析这里的事件处理机制了。
+
+通过上述 `epoll` 的介绍，我们知道在使用它前必须先要创建，所以，我们可以通过 `main()` 方法的部分作用（初始化服务）猜测出，`epoll` 定然也是在此创建的，不然系统没有，一个服务员是干不过来的。所以我们可以定位到其中一个 `initServer()` 函数。
+
+```c
+int main(int argc, char **argv) {
+
+    /** 省略部分代码 */
+
+    /** 【核心】逻辑，初始化redis服务 */
+    initServer();
+    
+    /** 省略部分代码 */
+}
+```
+
+接着在定位到其中的 `aeCreateEventLoop` 方法，接着再定位到其中的 `aeApiCreate` 方法。
+
+```c
+void initServer(void) {
+    /** 【核心】：创建事件循环处理器 */
+    server.el = aeCreateEventLoop(server.maxclients+CONFIG_FDSET_INCR);
+    if (server.el == NULL) {
+        serverLog(LL_WARNING,
+            "Failed creating the event loop. Error message: '%s'",
+            strerror(errno));
+        exit(1);
+    }
+}
+
+aeEventLoop *aeCreateEventLoop(int setsize) {
+
+    if (aeApiCreate(eventLoop) == -1) goto err;
+
+    for (i = 0; i < setsize; i++)
+        eventLoop->events[i].mask = AE_NONE;
+    return eventLoop;
+}
+```
+
+`aeApiCreate` 方法逻辑如下，这其中核心逻辑便是 `state->epfd = epoll_create(1024)`，通过调用 Linux 系统底层的 `epoll_create` 来将 `epoll` 实例创建出来，创建出来之后，便会将其保存到 state->epfd 中，state 则会保存到 aeEventLoop 中，aeEventLoop呢，则会保存到 redisServer 实例中的 el 参数中，redisServer 实例在服务全局仅有一个，el参数则也仅有一个，单个线程运行起来后，就相当于餐厅的一个服务员，他的系统便是 el 参数，通过 el 参数来处理源源不断的请求。
+
+```c
+/**
+ * 创建并初始化事件处理器
+*/
+static int aeApiCreate(aeEventLoop *eventLoop) {
+    /** 通过调用 zmalloc 函数为 aeApiState 结构分配内存，并检查分配是否成功。  */
+    aeApiState *state = zmalloc(sizeof(aeApiState));
+    if (!state) return -1;
+
+    /** 
+     * 使用 eventLoop->setsize 乘以 epoll_event 结构的大小为 state->events 分配内存，用于存储事件状态。
+     * 同样它也会检查内存分配是否成功。 
+     * */
+    state->events = zmalloc(sizeof(struct epoll_event)*eventLoop->setsize);
+    if (!state->events) {
+        zfree(state);
+        return -1;
+    }
+
+    /**
+     * 此处调用 epoll_create 来创建一个 epoll 实例，并将返回的文件描述符存储到 state->epfd 中。
+    */
+    state->epfd = epoll_create(1024); /* 1024 is just a hint for the kernel */
+
+    /** 如果创建失败，则释放之前分配的内存，并返回 -1 表示我创建失败了。 */
+    if (state->epfd == -1) {
+        zfree(state->events);
+        zfree(state);
+        return -1;
+    }
+
+    /** 设置 state->epfd 为关闭时自动释放资源 */
+    anetCloexec(state->epfd);
+
+    /** 接着将 state 赋值给 eventLoop->apidata */
+    eventLoop->apidata = state;
+    return 0;
+}
+```

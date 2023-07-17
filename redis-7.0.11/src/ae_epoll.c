@@ -36,22 +36,40 @@ typedef struct aeApiState {
     struct epoll_event *events; /* 存储发生事件的详细信息 */
 } aeApiState;
 
+/**
+ * 创建并初始化事件处理器
+*/
 static int aeApiCreate(aeEventLoop *eventLoop) {
+    /** 通过调用 zmalloc 函数为 aeApiState 结构分配内存，并检查分配是否成功。  */
     aeApiState *state = zmalloc(sizeof(aeApiState));
-
     if (!state) return -1;
+
+    /** 
+     * 使用 eventLoop->setsize 乘以 epoll_event 结构的大小为 state->events 分配内存，用于存储事件状态。
+     * 同样它也会检查内存分配是否成功。 
+     * */
     state->events = zmalloc(sizeof(struct epoll_event)*eventLoop->setsize);
     if (!state->events) {
         zfree(state);
         return -1;
     }
+
+    /**
+     * 此处调用 epoll_create 来创建一个 epoll 实例，并将返回的文件描述符存储到 state->epfd 中。
+    */
     state->epfd = epoll_create(1024); /* 1024 is just a hint for the kernel */
+
+    /** 如果创建失败，则释放之前分配的内存，并返回 -1 表示我创建失败了。 */
     if (state->epfd == -1) {
         zfree(state->events);
         zfree(state);
         return -1;
     }
+
+    /** 设置 state->epfd 为关闭时自动释放资源 */
     anetCloexec(state->epfd);
+
+    /** 接着将 state 赋值给 eventLoop->apidata */
     eventLoop->apidata = state;
     return 0;
 }
