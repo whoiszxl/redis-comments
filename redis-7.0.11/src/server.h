@@ -1695,8 +1695,7 @@ struct redisServer {
     list *clients_pending_write; /* There is to write or install handler. */
 
     /**
-     * 存储有待读取的客户端连接。当客户端的套接字缓冲区中有数据待读取时，将把客户端添加到 clients_pending_read 链表中。
-     * 这些客户端连接将在适当的时机被处理，读取套接字缓冲区中的数据。
+     * 多线程的操作下，有些待处理读事件的客户端会被加入到此链表中，在下一个 eventloop 循环的时候调用 beforeSleep 进行处理
     */
     list *clients_pending_read;  /* Client has pending read socket buffers. */
     list *slaves, *monitors;    /* List of slaves and MONITORs */

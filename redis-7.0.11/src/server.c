@@ -1592,6 +1592,7 @@ void beforeSleep(struct aeEventLoop *eventLoop) {
     handleBlockedClientsTimeout();
 
     /* We should handle pending reads clients ASAP after event loop. */
+    /** 在事件循环后，我们需要尽快处理含有待处理读取请求的客户端 */
     handleClientsWithPendingReadsUsingThreads();
 
     /* Handle TLS pending data. (must be done before flushAppendOnlyFile) */
@@ -1674,6 +1675,7 @@ void beforeSleep(struct aeEventLoop *eventLoop) {
         flushAppendOnlyFile(0);
 
     /* Handle writes with pending output buffers. */
+    /** 处理具有待处理输出缓冲区的客户端，通过IO多线程的方式 */
     handleClientsWithPendingWritesUsingThreads();
 
     /* Close clients that need to be closed asynchronous */
@@ -2355,12 +2357,19 @@ void closeSocketListeners(socketFds *sfd) {
 
 /* Create an event handler for accepting new connections in TCP or TLS domain sockets.
  * This works atomically for all socket fds */
+/**
+ * 此函数会将之前通过 listenToPort 建立好的 socket 连接添加到 epoll 实例中，让 epoll 来管理这些 socket 连接
+*/
 int createSocketAcceptHandler(socketFds *sfd, aeFileProc *accept_handler) {
     int j;
 
+    /** 循环之前建立了多少个连接，比如说 `127.0.0.1` 和 `192.168.10.32` 则就两个，sfd->fd 数组中则是保存了这两个连接的 fd */
     for (j = 0; j < sfd->count; j++) {
+
+        /** 通过 aeCreateFileEvent 来将这些 fd 注册到 epoll 实例中，让 epoll 接管 socket 连接的处理  */
         if (aeCreateFileEvent(server.el, sfd->fd[j], AE_READABLE, accept_handler,NULL) == AE_ERR) {
             /* Rollback */
+            /** 如果 epoll 接管失败，那便回滚操作 */
             for (j = j-1; j >= 0; j--) aeDeleteFileEvent(server.el, sfd->fd[j], AE_READABLE);
             return C_ERR;
         }
@@ -2705,7 +2714,9 @@ void initServer(void) {
     }
 
     /* Create an event handler for accepting new connections in TCP and Unix
-     * domain sockets. */
+     * domain sockets.  创建一个事件处理器来处理新的连接请求*/
+
+    /** 此方法为处理 TCP 的新连接请求，将之前通过 listenToPort 建立好的连接添加到 epoll 实例中，让 epoll 来管理这些连接  */
     if (createSocketAcceptHandler(&server.ipfd, acceptTcpHandler) != C_OK) {
         serverPanic("Unrecoverable error creating TCP socket accept handler.");
     }

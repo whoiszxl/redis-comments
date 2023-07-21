@@ -1,5 +1,7 @@
 {
     "files.associations": {
-        "type_traits": "c"
+        "type_traits": "c",
+        "socket.h": "c",
+        "thread": "c"
     }
 }

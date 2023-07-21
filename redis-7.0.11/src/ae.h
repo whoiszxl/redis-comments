@@ -97,16 +97,23 @@ typedef struct aeFiredEvent {
 
 /* State of an event based program */
 typedef struct aeEventLoop {
-    int maxfd;   /* highest file descriptor currently registered */
-    int setsize; /* max number of file descriptors tracked */
-    long long timeEventNextId;
-    aeFileEvent *events; /* Registered events */
-    aeFiredEvent *fired; /* Fired events */
-    aeTimeEvent *timeEventHead;
-    int stop;
-    void *apidata; /* This is used for polling API specific data */
-    aeBeforeSleepProc *beforesleep;
-    aeBeforeSleepProc *aftersleep;
+    int maxfd;   /* 当前已注册的最高文件描述符的值 */
+    int setsize; /* 事件循环中跟踪的最大文件描述符数量 */
+    long long timeEventNextId; /** 下一个时间事件的唯一标识符，每个时间事件都有一个唯一的标识符，以便在事件循环中进行管理和识别。 */
+    aeFileEvent *events; /* 文件事件数组，存储已经注册了的文件事件 */
+    aeFiredEvent *fired; /* 就绪的文件事件数组，等待执行的 */
+    aeTimeEvent *timeEventHead; /** 多个时间事件的链表头结点 */
+    int stop; /** 事件循环是否结束的标记 */
+
+    /**
+     * 存储 I/O 多路复用的模型：aeApiState
+     * ae_epoll.c | ae_evport.c | ae_kqueue.c | ae_select.c 皆有对 aeApiState 的实现
+     * 通过进一步封装成 apidata，进以屏蔽系统底层在事件处理上的差异。
+    */
+    void *apidata; 
+    
+    aeBeforeSleepProc *beforesleep; /** 阻塞等待文件事件发生之前会调用此函数 */
+    aeBeforeSleepProc *aftersleep; /** 进程被唤醒之后会调用此函数 */
     int flags;
 } aeEventLoop;
 

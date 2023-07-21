@@ -157,21 +157,43 @@ void aeStop(aeEventLoop *eventLoop) {
     eventLoop->stop = 1;
 }
 
+/**
+ * 向事件循环 eventLoop 中添加一个文件事件
+ * fd：事件的描述符
+ * mask: 要监听的事件类型，可以是 AE_READABLE 或 AE_WRITABLE，也可以是两者的位或操作。
+ * aeFileProc *proc: 一个函数指针，指向处理事件的回调函数。当指定的事件发生时，事件循环将调用这个回调函数来处理事件。比如说 acceptTcpHandler，在有新的redis-cli建立连接的时候便会回调此函数。
+ * clientData: 可选的客户端数据，在回调函数中使用。
+*/
 int aeCreateFileEvent(aeEventLoop *eventLoop, int fd, int mask,
         aeFileProc *proc, void *clientData)
 {
+
+    /** 判断当前需要注册的 fd 是否超出了事件循环的最大范围，超出则报错 */
     if (fd >= eventLoop->setsize) {
         errno = ERANGE;
         return AE_ERR;
     }
+
+    /** 从事件循环中获取到对应的文件事件结构实例 */
     aeFileEvent *fe = &eventLoop->events[fd];
 
+    /** 这一步将文件描述符添加到事件监听机制中，epoll中直接调用 epoll_ctl */
     if (aeApiAddEvent(eventLoop, fd, mask) == -1)
         return AE_ERR;
+
+    /** 将 mask 更新进文件事件结构实例中，表示此文件描述符对传入的事件是感兴趣的 */
     fe->mask |= mask;
+
+    /** 接着判断是否是可读事件，若是则更新可读事件的回调函数为传入的 proc */
     if (mask & AE_READABLE) fe->rfileProc = proc;
+
+    /** 接着判断是否是可写事件，若是则更新可写事件的回调函数为传入的 proc */
     if (mask & AE_WRITABLE) fe->wfileProc = proc;
+
+    /** 接着把 clientData 封装进去，用于在回调函数中传递客户端发送过来的数据 */
     fe->clientData = clientData;
+
+    /** 接着判断目前的 fd 是否大于 maxfd（当前已注册的最高文件描述符的值），如果大于的话，则更新此 maxfd */
     if (fd > eventLoop->maxfd)
         eventLoop->maxfd = fd;
     return AE_OK;
@@ -358,24 +380,36 @@ static int processTimeEvents(aeEventLoop *eventLoop) {
  * The function returns the number of events processed. */
 int aeProcessEvents(aeEventLoop *eventLoop, int flags)
 {
+    /** processed 记录处理了多少个事件，numevents 则是当前阻塞获取了多少事件  */
     int processed = 0, numevents;
 
     /* Nothing to do? return ASAP */
+    /** 判断当前需要处理的事件如果不处于 时间事件 或者 文件事件 范围内的话，则中断执行 */
     if (!(flags & AE_TIME_EVENTS) && !(flags & AE_FILE_EVENTS)) return 0;
 
     /* Note that we want to call select() even if there are no
      * file events to process as long as we want to process time
      * events, in order to sleep until the next time event is ready
      * to fire. */
+    
+    /** 
+     * eventLoop->maxfd 是当前已注册的最高文件描述符的值，不为 -1 则说明有事件需要进行 IO多路复用 处理 
+     * 
+     * ((flags & AE_TIME_EVENTS) && !(flags & AE_DONT_WAIT)) 则判断是否启用了时间事件，并且没有设置 AE_DONT_WAIT 的标记
+     * 
+     * AE_DONT_WAIT 表示处理事件时不需要进行阻塞等待，此处需要阻塞等待，则做取反计算
+     * */
     if (eventLoop->maxfd != -1 ||
         ((flags & AE_TIME_EVENTS) && !(flags & AE_DONT_WAIT))) {
         int j;
         struct timeval tv, *tvp;
         int64_t usUntilTimer = -1;
 
+        /** 启用了时间事件，并且没有设置 AE_DONT_WAIT 的标记的话，则获取到之后一次事件的处理时间间隔，单位为微秒 */
         if (flags & AE_TIME_EVENTS && !(flags & AE_DONT_WAIT))
             usUntilTimer = usUntilEarliestTimer(eventLoop);
 
+        /** 如果计算出了时间间隔，表示在阻塞等待的模式下是有任务要执行的，其中将时间转化成秒数和微秒数 */
         if (usUntilTimer >= 0) {
             tv.tv_sec = usUntilTimer / 1000000;
             tv.tv_usec = usUntilTimer % 1000000;
@@ -384,34 +418,50 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
             /* If we have to check for events but need to return
              * ASAP because of AE_DONT_WAIT we need to set the timeout
              * to zero */
+            /** 如果是非阻塞模式，则直接将间隔时间置为0，无需等待 */
             if (flags & AE_DONT_WAIT) {
                 tv.tv_sec = tv.tv_usec = 0;
                 tvp = &tv;
             } else {
                 /* Otherwise we can block */
+                /** 没有 AE_DONT_WAIT 的话，时间直接置为 null，无限等待，直到有事件发生 */
                 tvp = NULL; /* wait forever */
             }
         }
 
+        /** 如果 事件循环处理器 里设置了无需等待，则一样逻辑将间隔时间置为 0 */
         if (eventLoop->flags & AE_DONT_WAIT) {
             tv.tv_sec = tv.tv_usec = 0;
             tvp = &tv;
         }
 
+        /** 如果前置处理函数存在，并且开启了前置处理的配置，则调用前置处理函数 */
         if (eventLoop->beforesleep != NULL && flags & AE_CALL_BEFORE_SLEEP)
             eventLoop->beforesleep(eventLoop);
 
         /* Call the multiplexing API, will return only on timeout or when
          * some event fires. */
+        /**
+         * 【核心逻辑】：调用多路复用的api函数进行事件监听，此函数会阻塞，直到超时了或者有就绪事件触发才会返回
+         * 
+         *  Linux下，底层便是封装了 epoll 的 epoll_wait 逻辑
+        */
         numevents = aeApiPoll(eventLoop, tvp);
 
         /* After sleep callback. */
+        /** 接着判断是否存在后置处理函数，存在并且开启了后置处理的配置，则调用后置处理函数 */
         if (eventLoop->aftersleep != NULL && flags & AE_CALL_AFTER_SLEEP)
             eventLoop->aftersleep(eventLoop);
 
+        /** 接着再来遍历所有的就绪事件 */
         for (j = 0; j < numevents; j++) {
+            /** 拿到每个事件的 fd 文件描述符 */
             int fd = eventLoop->fired[j].fd;
+
+            /** 从多路复用的事件中获取到指定的事件，通过 fd 获取 */
             aeFileEvent *fe = &eventLoop->events[fd];
+
+            /** 再从就绪事件中获取到对应的 mask */
             int mask = eventLoop->fired[j].mask;
             int fired = 0; /* Number of events fired for current fd. */
 
@@ -426,6 +476,17 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
              * This is useful when, for instance, we want to do things
              * in the beforeSleep() hook, like fsyncing a file to disk,
              * before replying to a client. */
+
+            /**
+             * 根据事件循环中定义的掩码 mask 中的 AE_BARRIER 标志位判断是否需要改变事件的执行顺序。
+             * 
+             * 如果 fe->mask 中包含 AE_BARRIER 标志，表示需要执行顺序的反转。在这种情况下，将 invert 变量设置为非零值，表示需要反转执行顺序。
+             * 
+             * 默认情况下，可读事件会先执行，可写事件会在可读事件之后执行。这样做是为了在处理查询后，能够立即响应查询的回复。但是当应用程序设置
+             * 了AE_BARRIER标志时，要求不在可读事件之后触发可写事件。在这种情况下，将调换可读和可写事件的执行顺序，即先执行可写事件，再执行可读事件。
+             * 
+             * 通过这样的判断和处理，可以灵活地控制事件的执行顺序，以满足特定的应用需求。
+            */
             int invert = fe->mask & AE_BARRIER;
 
             /* Note the "fe->mask & mask & ..." code: maybe an already
@@ -434,14 +495,21 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
              *
              * Fire the readable event if the call sequence is not
              * inverted. */
+
+            /** 通过fe->mask & mask & AE_READABLE的条件判断，判断当前文件描述符是否设置了可读事件的掩码。*/
             if (!invert && fe->mask & mask & AE_READABLE) {
                 /** 此处进入命令执行的逻辑，跳转到connection.c的connSocketEventHandler方法 */
                 fe->rfileProc(eventLoop,fd,fe->clientData,mask);
+
+                /** 将fired计数加一，表示已经处理了一个事件。 */
                 fired++;
+
+                /** 通过fe = &eventLoop->events[fd]语句刷新fe指针，以防止在处理过程中发生事件数组的重新分配导致指针失效。 */
                 fe = &eventLoop->events[fd]; /* Refresh in case of resize. */
             }
 
             /* Fire the writable event. */
+            /** 执行写事件函数 */
             if (fe->mask & mask & AE_WRITABLE) {
                 if (!fired || fe->wfileProc != fe->rfileProc) {
                     fe->wfileProc(eventLoop,fd,fe->clientData,mask);
@@ -451,6 +519,7 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
 
             /* If we have to invert the call, fire the readable event now
              * after the writable one. */
+            /** 改变顺序了的话，可读事件会在此处执行 */
             if (invert) {
                 fe = &eventLoop->events[fd]; /* Refresh in case of resize. */
                 if ((fe->mask & mask & AE_READABLE) &&
@@ -465,6 +534,7 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
         }
     }
     /* Check time events */
+    /** 如果是时间事件，那么在此处执行时间事件处理函数 */
     if (flags & AE_TIME_EVENTS)
         processed += processTimeEvents(eventLoop);
 
