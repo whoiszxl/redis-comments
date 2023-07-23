@@ -398,3 +398,31 @@ static int aeApiCreate(aeEventLoop *eventLoop) {
     return 0;
 }
 ```
+
+回归主流程，我们可以看到 `aeMain` 方法的主体。这一段，我们在 aeEventLoop 中维护了一个 stop 状态字段，并赋值为 0 ，表示终止状态是 false，接着通过一个 while 循环自旋，只要 stop 状态不为 1 则一直不会停止，然后循环体中便执行一个 aeProcessEvents 的函数，此函数从字面意思便知是处理事件的，那么事件是什么呢？从参数可知，AE_ALL_EVENTS 为所有事件，AE_CALL_BEFORE_SLEEP 为前置处理，AE_CALL_AFTER_SLEEP 则为后置处理，相当于 Java 中的 AOP 。
+
+此处使用 while 循环不断自旋，用餐厅服务员的案例来说，便是一个餐厅在招到一个服务员后，并不会说让服务员处理了一桌客人的需求后，就解雇掉再招聘一个，那样成本太高了。所以我们这里其实就是一个线程无限复用，餐厅开张之后，便只会通过这一个线程，也就是这一个服务员来处理所有事项，直到餐厅倒闭，Redis 的服务进程停止，不然他处理完一批任务之后又会重新进入 while 循环继续等待处理任务。从这里我们便不难看出，Redis 在处理各种命令的时候是单线程执行的，所以，我们经常说到的一个概念：`Redis是单线程的`，就能够在此得到印证，当然，这仅仅是执行命令的操作的是单线程的，像 IO 操作，以及一些后台的定时任务也是线程执行的，Redis 的整体是多线程的。
+```c
+void aeMain(aeEventLoop *eventLoop) {
+    /** 此处将eventLoop事件循环的属性编辑为不停止 */
+    eventLoop->stop = 0;
+
+    /** 此处进入自旋状态，直到stop状态被置为1的时候才停止自旋 */
+    while (!eventLoop->stop) {
+        /** 处理事件的函数 */
+        aeProcessEvents(eventLoop, AE_ALL_EVENTS|
+                                   AE_CALL_BEFORE_SLEEP|
+                                   AE_CALL_AFTER_SLEEP);
+    }
+}
+```
+
+
+#### aeProcessEvents
+接下来，我们便来分析一下 aeProcessEvents 里，是怎么处理我们发送过来的命令的。在分析命令处理前，其实我们还得再想办法处理一下如何将顾客与咱们餐厅的系统建立联系，也就是 redis-cli 启动之后，需要和 redis-server 建立连接，建立连接之后我们才能够去处理命令的执行。通过之前 `epoll` 的逻辑分析我们可以知道，这个建立连接就是需要把这个 socket 通过 `epoll_ctl` 注册到 `epoll` 实例中。
+
+这里，我们便来分析一下这个流程。建立连接，其实也是一个事件，所以，此事件也是通过 `aeMain` 函数来进一步执行。
+
+
+
+
