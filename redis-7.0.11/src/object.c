@@ -368,7 +368,9 @@ void incrRefCount(robj *o) {
 }
 
 void decrRefCount(robj *o) {
+    /** 如果当前 redisObject 的引用计数为 1，则需要释放掉 robj 的内存 */
     if (o->refcount == 1) {
+        /** 通过 switch 匹配 robj 的类型来选择对应的释放函数 */
         switch(o->type) {
         case OBJ_STRING: freeStringObject(o); break;
         case OBJ_LIST: freeListObject(o); break;
@@ -381,6 +383,7 @@ void decrRefCount(robj *o) {
         }
         zfree(o);
     } else {
+        /** 如果当前 redisObject 的引用计数不为 1，并且不是共享对象，则将 refcount 引用计数减一 */
         if (o->refcount <= 0) serverPanic("decrRefCount against refcount <= 0");
         if (o->refcount != OBJ_SHARED_REFCOUNT) o->refcount--;
     }
@@ -684,9 +687,13 @@ robj *tryObjectEncoding(robj *o) {
      * try the EMBSTR encoding which is more efficient.
      * In this representation the object and the SDS string are allocated
      * in the same chunk of memory to save space and cache misses. */
+    /**
+     * 如果这个 value 的长度小于44，则需要尝试给他转换成一个 embstr 嵌入式字符串
+    */
     if (len <= OBJ_ENCODING_EMBSTR_SIZE_LIMIT) {
         robj *emb;
 
+        /**判断他当前是否就是 embstr， 若是则直接返回，若不是则创建一个新的 embstr 字符串返回 */
         if (o->encoding == OBJ_ENCODING_EMBSTR) return o;
         emb = createEmbeddedStringObject(s,sdslen(s));
         decrRefCount(o);

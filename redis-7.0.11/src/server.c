@@ -236,10 +236,20 @@ int dictSdsKeyCompare(dict *d, const void *key1,
 {
     int l1,l2;
     UNUSED(d);
-
+    
+    /** 通过 sdslen 获取 key1 和 key2 字符串的长度 */
     l1 = sdslen((sds)key1);
     l2 = sdslen((sds)key2);
+
+    /** 如果长度不相等，则返回 false */
     if (l1 != l2) return 0;
+
+    /** 
+     * 通过 memcmp 判断 key1 和 key2 的内容是否相等。
+     * 
+     * memcmp 函数是 C 标准库中的函数，用于比较两块内存区域的内容。
+     * 
+     */
     return memcmp(key1, key2, l1) == 0;
 }
 
@@ -361,6 +371,7 @@ uint64_t dictEncObjHash(const void *key) {
  * but to guarantee the performance of redis, we still allow dict to expand
  * if dict load factor exceeds HASHTABLE_MAX_LOAD_FACTOR. */
 int dictExpandAllowed(size_t moreMem, double usedRatio) {
+    /** 判断当前 dict 的使用率是否超过了 1.618，未超过的话再判断是否超过了内存的上限值 */
     if (usedRatio <= HASHTABLE_MAX_LOAD_FACTOR) {
         return !overMaxmemoryAfterAlloc(moreMem);
     } else {
@@ -424,14 +435,15 @@ dictType zsetDictType = {
 };
 
 /* Db->dict, keys are sds strings, vals are Redis objects. */
+/** db->dict 字典的相关处理函数实现  */
 dictType dbDictType = {
-    dictSdsHash,                /* hash function */
-    NULL,                       /* key dup */
-    NULL,                       /* val dup */
-    dictSdsKeyCompare,          /* key compare */
-    dictSdsDestructor,          /* key destructor */
-    dictObjectDestructor,       /* val destructor */
-    dictExpandAllowed,          /* allow to expand */
+    dictSdsHash,                /* hash函数，使用 siphash 算法进行取 hash，这个算法计算 hash 的速度较快，hash碰撞概率也较小。  */
+    NULL,                       /* key 复制函数为 null，表明无需复制操作 */
+    NULL,                       /* value 复制函数为 null，表明无需复制操作 */
+    dictSdsKeyCompare,          /* key 比较算法，按照字符串实际内容进行比较  */
+    dictSdsDestructor,          /* key sds 释放函数，底层通过 zfree 进行释放 */
+    dictObjectDestructor,       /* val object 释放函数，底层通过 decrRefCount(val) 进行释放  */
+    dictExpandAllowed,          /* 判断是否可以扩容的函数 */
     dictEntryMetadataSize       /* size of entry metadata in bytes */
 };
 

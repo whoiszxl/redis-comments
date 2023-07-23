@@ -45,14 +45,21 @@
 #define DICT_ERR 1
 
 typedef struct dictEntry {
+    /** kv 结构中的 key 指针，指向一个 sds 实例 */
     void *key;
+
+    /** kv 结构总的 vaue ，union 结构，表示可以存储下列数据结构的任意一种，类似 Java 中的 Object，但是这个 union 限制了对象存储的范围 */
     union {
-        void *val;
-        uint64_t u64;
-        int64_t s64;
-        double d;
+        void *val; /** 非数字类型时使用此类型 */
+        uint64_t u64; /** 无符号整数使用此类型 */
+        int64_t s64; /** 有符号整数使用此类型 */
+        double d; /** 浮点数时使用此类型 */
     } v;
+
+    /** 链表指针，当有冲突时使用此 next 指针指向下一个 dictEntry */
     struct dictEntry *next;     /* Next entry in the same hash bucket. */
+
+    /** 存储额外的元数据 */
     void *metadata[];           /* An arbitrary number of bytes (starting at a
                                  * pointer-aligned address) of size as returned
                                  * by dictType's dictEntryMetadataBytes(). */
@@ -60,16 +67,43 @@ typedef struct dictEntry {
 
 typedef struct dict dict;
 
+/**
+ * 定义了一系列函数指针，用于处理字典中键和值的操作。这个结构体里的函数指针就像Java中的接口，需要被其他类做实现。
+ * 
+ * VS Code 中，按住 Ctrl + 鼠标左键，然后再选中 server.c 文件便可以看到所有的实现类。
+ * Clion 也是 按住 Ctrl + 鼠标左键，然后弹出所有的实现类来，通过 server.c 的前缀进行筛选。
+*/
 typedef struct dictType {
+
+    /** 用于计算给定 key 的哈希值，以便将 key 分布到哈希表的不同桶中 */
     uint64_t (*hashFunction)(const void *key);
+
+    /** 
+     * 用于复制给定 key 的副本  (Duplicate) 
+     * 
+     * 因为 key 指针被其他的位置的指针修改了之后也会变化，若要独立创建一个 key 不受到其他指针影响，则需要独立拷贝一个 key 出来。（valDup 同理）
+     * 
+     * */
     void *(*keyDup)(dict *d, const void *key);
+
+    /** 用于复制给定 key 的副本  (Duplicate) */
     void *(*valDup)(dict *d, const void *obj);
+
+    /** 用于比较 key1 和 key2 是否相等 */
     int (*keyCompare)(dict *d, const void *key1, const void *key2);
+    
+    /** 用于释放 key 占用的内存，当 key 被从字典中删除或字典被销毁时调用 */
     void (*keyDestructor)(dict *d, void *key);
+
+    /** 用于释放 key 占用的内存，当 key 被从字典中删除或字典被销毁时调用。 */
     void (*valDestructor)(dict *d, void *obj);
+
+    /** 用于检查是否允许字典扩容，并返回一个整数表示是否允许扩容 */
     int (*expandAllowed)(size_t moreMem, double usedRatio);
+
     /* Allow a dictEntry to carry extra caller-defined metadata.  The
      * extra memory is initialized to 0 when a dictEntry is allocated. */
+    /** 用于返回额外的、由调用者定义的元数据字节数，每当创建一个新的字典条目时，这些额外的内存会被初始化为0。 */
     size_t (*dictEntryMetadataBytes)(dict *d);
 } dictType;
 
@@ -77,15 +111,31 @@ typedef struct dictType {
 #define DICTHT_SIZE_MASK(exp) ((exp) == -1 ? 0 : (DICTHT_SIZE(exp))-1)
 
 struct dict {
+    /** 特殊函数字典，字典中定义了对键与值的处理方式，比如：hash函数，对比函数等 */
     dictType *type;
 
+    /** 
+     * 实际存储kv键值对的地方，此处为一个数组，有两个元素，每个元素都是一个二级指针数组
+     * 第一个数组实际存储 kv 键值对
+     * 第二个数组则是用来实现渐进式 rehash 的
+     * */
     dictEntry **ht_table[2];
+
+    /** 存储每个hash数组中存储了多少个 kv 键值对 */
     unsigned long ht_used[2];
 
+    /** 目前正在进行 rehash 操作的哈希表的索引 */
     long rehashidx; /* rehashing not in progress if rehashidx == -1 */
 
     /* Keep small vars at end for optimal (minimal) struct padding */
+    /** 
+     * 用于暂停 rehash 操作的标志。如果值大于 0，表示 rehashing 被暂停了，小于 0 则表示出现了编码错误。 
+     * 
+     * 如果有迭代器正在遍历 hash 表，则会对 pauserehash 做加一的操作，遍历完后做减一操作。
+     **/
     int16_t pauserehash; /* If >0 rehashing is paused (<0 indicates coding error) */
+
+    /** 用于记录每个哈希表的大小指数。哈希表的大小是 2 的指数次方，该数组记录每个哈希表的大小指数。哈希表的大小指数组的大小。 */
     signed char ht_size_exp[2]; /* exponent of size. (size = 1<<exp) */
 };
 
@@ -114,6 +164,10 @@ typedef void (dictScanBucketFunction)(dict *d, dictEntry **bucketref);
     if ((d)->type->valDestructor) \
         (d)->type->valDestructor((d), (entry)->v.val)
 
+/**
+ * 先判断字典中是否存在 value 的拷贝函数，如果存在的话，则把 value 拷贝一份再保存到 entry 的 value 中。
+ * 如果不存在拷贝函数，则直接将 value 的指针保存进去。
+*/
 #define dictSetVal(d, entry, _val_) do { \
     if ((d)->type->valDup) \
         (entry)->v.val = (d)->type->valDup((d), _val_); \
@@ -134,6 +188,10 @@ typedef void (dictScanBucketFunction)(dict *d, dictEntry **bucketref);
     if ((d)->type->keyDestructor) \
         (d)->type->keyDestructor((d), (entry)->key)
 
+/**
+ * 先判断字典中是否存在 key 的拷贝函数，如果存在的话，则把 key 拷贝一份再保存到 entry 的 key 中。
+ * 如果不存在拷贝函数，则直接将 key 的指针保存进去。
+*/
 #define dictSetKey(d, entry, _key_) do { \
     if ((d)->type->keyDup) \
         (entry)->key = (d)->type->keyDup((d), _key_); \
