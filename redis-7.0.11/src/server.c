@@ -7044,19 +7044,37 @@ int main(int argc, char **argv) {
 #endif
 
     /* We need to initialize our libraries, and the server configuration. */
+    /** 初始化一些库，还有一些服务配置 */
 #ifdef INIT_SETPROCTITLE_REPLACEMENT
     spt_init(argc, argv);
 #endif
+    /** 设置排序规则（LC_COLLATE）为空字符串。本地化环境的设置可以影响字符串比较的行为，
+     * 这里将排序规则设置为空字符串可能是为了使用默认的字符串比较规则，也就是 C 语言的默认规则。 */
     setlocale(LC_COLLATE,"");
+
+    /** 更新时区信息，将系统的时区信息存储在 timezone 全局变量中。这样，后续在 Redis 服务器中，可以使用这个全局变量获取当前的时区信息。*/
     tzset(); /* Populates 'timezone' global. */
+
+    /** 设置 Redis 在发生内存分配失败（OOM，Out of Memory）时的处理函数 */
     zmalloc_set_oom_handler(redisOutOfMemoryHandler);
 
     /* To achieve entropy, in case of containers, their time() and getpid() can
      * be the same. But value of tv_usec is fast enough to make the difference */
+    
+    /** 获取当前的时间戳，包括秒和微秒 */
     gettimeofday(&tv,NULL);
+
+    /** 使用当前时间戳、进程ID和微秒数作为种子，初始化标准库中的伪随机数生成器（srand）
+     * 这样做是为了确保不同的进程在同一时刻也能生成不同的随机数序列，以增加随机性。 */
     srand(time(NULL)^getpid()^tv.tv_usec);
+
+    /** 使用当前时间戳、进程ID和微秒数作为种子，初始化非标准库中的伪随机数生成器（srandom）。 */
     srandom(time(NULL)^getpid()^tv.tv_usec);
+
+    /** 将时间戳（秒和微秒的组合）与进程ID进行位异或操作，并使用结果作为种子来初始化一个64位的伪随机数生成器。 */
     init_genrand64(((long long) tv.tv_sec * 1000000 + tv.tv_usec) ^ getpid());
+
+    /** 初始化CRC64哈希算法的表格，CRC64是一种循环冗余校验算法，用于生成固定长度的校验码。 */
     crc64_init();
 
     /* Store umask value. Because umask(2) only offers a set-and-get API we have
@@ -7066,14 +7084,19 @@ int main(int argc, char **argv) {
     umask(server.umask = umask(0777));
 
     uint8_t hashseed[16];
+
+    /** 生成随机的 16 字节的数据，将结果存储在 hashseed 数组中。这样可以确保在 Redis 中使用的哈希函数具有随机性。 */
     getRandomBytes(hashseed,sizeof(hashseed));
     dictSetHashFunctionSeed(hashseed);
 
+    /** 获取程序的执行路径，并将结果保存在 exec_name 变量中 */
     char *exec_name = strrchr(argv[0], '/');
+    /** 如果执行路径不存在，则直接取第一个参数作为执行名称 */
     if (exec_name == NULL) exec_name = argv[0];
+    /** 检查程序是否以 Sentinel 模式运行。如果运行在 Sentinel 模式下，将 server.sentinel_mode 设置为 true，否则设置为 false */
     server.sentinel_mode = checkForSentinelMode(argc,argv, exec_name);
 
-    //1. 初始化服务端的配置信息
+    /** 初始化服务端的配置信息 */
     initServerConfig();
     ACLInit(); /* The ACL subsystem must be initialized ASAP because the
                   basic networking code and client creation depends on it. */
@@ -7090,7 +7113,7 @@ int main(int argc, char **argv) {
     /* We need to init sentinel right now as parsing the configuration file
      * in sentinel mode will have the effect of populating the sentinel
      * data structures with master nodes to monitor. */
-    /* 判断是否打开了哨兵模式，打开了的话就初始化哨兵的配置 */
+    /** 判断是否打开了哨兵模式，打开了的话就初始化哨兵的配置 */
     if (server.sentinel_mode) {
         initSentinelConfig();
         initSentinel();
@@ -7108,6 +7131,7 @@ int main(int argc, char **argv) {
     else if (strstr(exec_name,"redis-check-aof") != NULL)
         redis_check_aof_main(argc,argv);
 
+    /** 如果参数数量大于等于 2，则需要进行相对应的处理 */
     if (argc >= 2) {
         j = 1; /* First option to parse in argv[] */
         sds options = sdsempty();

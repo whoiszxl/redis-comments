@@ -947,6 +947,8 @@ int redisBufferRead(redisContext *c) {
     if (c->err)
         return REDIS_ERR;
 
+    /** 通过 funcs 里的 read 方法来读取，底层逻辑就是 recv 操作
+     * redis-cli 发送命令中的方法是：net.c 中的 redisNetRead(redisContext *c, char *buf, size_t bufcap)  */
     nread = c->funcs->read(c, buf, sizeof(buf));
     if (nread < 0) {
         return REDIS_ERR;
@@ -973,17 +975,26 @@ int redisBufferWrite(redisContext *c, int *done) {
     if (c->err)
         return REDIS_ERR;
 
+    /** 如果要输出到服务端的数据大于0 */
     if (hi_sdslen(c->obuf) > 0) {
+        /** 调用 funcs 的 write 方法写出，redis-cli 发送命令中的方法是：net.c 中的 redisNetWrite(redisContext *c) */
         ssize_t nwritten = c->funcs->write(c);
+
+        /** 写出失败，返回报错 */
         if (nwritten < 0) {
             return REDIS_ERR;
         } else if (nwritten > 0) {
+            /** 写出成功，并且写出的 size 等于命令的 size */
             if (nwritten == (ssize_t)hi_sdslen(c->obuf)) {
+                /** 释放掉客户端中命令的内存 */
                 hi_sdsfree(c->obuf);
+                /** 置为一个空字符串 */
                 c->obuf = hi_sdsempty();
+                /** 如果置空字符串失败，则抛出内存溢出的异常 */
                 if (c->obuf == NULL)
                     goto oom;
             } else {
+                /** 没有全部写出的场景，抛出 oom */
                 if (hi_sdsrange(c->obuf,nwritten,-1) < 0) goto oom;
             }
         }
@@ -1038,14 +1049,17 @@ int redisGetReply(redisContext *c, void **reply) {
         return REDIS_ERR;
 
     /* For the blocking context, flush output buffer and read reply */
+    /** 发送请求，阻塞等待回复，在 redis-cli 发送一条指令后，客户端会阻塞住等待服务端返回数据 */
     if (aux == NULL && c->flags & REDIS_BLOCK) {
         /* Write until done */
+        /** 尝试将输出缓冲区的内容写入服务器，直到输出缓冲区为空（wdone为真）或者写入操作失败 */
         do {
             if (redisBufferWrite(c,&wdone) == REDIS_ERR)
                 return REDIS_ERR;
         } while (!wdone);
 
         /* Read until there is a reply */
+        /** 当命令发送给服务端之后，服务端会返回数据，此处通过 read 来读取服务端返回的数据 */
         do {
             if (redisBufferRead(c) == REDIS_ERR)
                 return REDIS_ERR;
@@ -1126,10 +1140,17 @@ int redisAppendCommand(redisContext *c, const char *format, ...) {
     return ret;
 }
 
+/**
+ * 将一个命令追加到Redis连接的输出缓冲区中
+*/
 int redisAppendCommandArgv(redisContext *c, int argc, const char **argv, const size_t *argvlen) {
     hisds cmd;
     long long len;
 
+    /** 
+     * 将 sds 参数格式化，并返回格式化后的 sds 长度返回
+     * 如传入："set username whoiszxl"
+     * 则 cmd 参数更改为："*3\r\n$3\r\nset\r\n$8\r\nusername\r\n$8\r\nwhoiszxl\r\n" */
     len = redisFormatSdsCommandArgv(&cmd,argc,argv,argvlen);
     if (len == -1) {
         __redisSetError(c,REDIS_ERR_OOM,"Out of memory");

@@ -58,6 +58,7 @@ void redisNetClose(redisContext *c) {
 }
 
 ssize_t redisNetRead(redisContext *c, char *buf, size_t bufcap) {
+    /** 通过 recv 接收服务端返回的数据，将 recv 到的数据写到 buf 里 */
     ssize_t nread = recv(c->fd, buf, bufcap, 0);
     if (nread == -1) {
         if ((errno == EWOULDBLOCK && !(c->flags & REDIS_BLOCK)) || (errno == EINTR)) {
@@ -80,6 +81,7 @@ ssize_t redisNetRead(redisContext *c, char *buf, size_t bufcap) {
 }
 
 ssize_t redisNetWrite(redisContext *c) {
+    /** 通过 send() 方法将命令发送到 server 端 */
     ssize_t nwritten = send(c->fd, c->obuf, hi_sdslen(c->obuf), 0);
     if (nwritten < 0) {
         if ((errno == EWOULDBLOCK && !(c->flags & REDIS_BLOCK)) || (errno == EINTR)) {

@@ -1644,6 +1644,7 @@ static int cliReadReply(int output_raw_strings) {
     sds out = NULL;
     int output = 1;
 
+    /** 发送请求，获得响应，将响应信息写入 _reply */
     if (redisGetReply(context,&_reply) != REDIS_OK) {
         if (config.blocking_state_aborted) {
             config.blocking_state_aborted = 0;
@@ -1670,6 +1671,7 @@ static int cliReadReply(int output_raw_strings) {
         return REDIS_ERR; /* avoid compiler warning */
     }
 
+    /** 获取到响应体  */
     reply = (redisReply*)_reply;
 
     config.last_cmd_type = reply->type;
@@ -1713,12 +1715,19 @@ static int cliReadReply(int output_raw_strings) {
         return REDIS_ERR; /* avoid compiler warning */
     }
 
+    /** 如果需要输出 */
     if (output) {
+        /** 获取到格式化后的 sds 字符串 out */
         out = cliFormatReply(reply, config.output, output_raw_strings);
+        /** 通过 fwrite 将结果写入到标准输出流中，也就是将结果展示在用户交互命令行中 */
         fwrite(out,sdslen(out),1,stdout);
+        /** 刷新标准输出流 */
         fflush(stdout);
+        /** 释放格式化后的 sds 的内存 */
         sdsfree(out);
     }
+
+    /** 释放 reply 响应体的内存 */
     freeReplyObject(reply);
     return REDIS_OK;
 }
@@ -1842,6 +1851,7 @@ static int cliSendCommand(int argc, char **argv, long repeat) {
             return REDIS_ERR;  /* Error = slaveMode lost connection to master */
         }
 
+        /** 客户端发送请求，并等待响应 */
         if (cliReadReply(output_raw) != REDIS_OK) {
             zfree(argvlen);
             return REDIS_ERR;
@@ -2435,6 +2445,8 @@ static int issueCommandRepeat(int argc, char **argv, long repeat) {
      * it's own HELP message, rather than handle it by the CLI, see ldbRepl.
      *
      * For the normal Redis HELP, we can process it without a connection. */
+
+    /** 如果没有开启 lua debug模式，输入了 help 或者 ? 则输出帮助信息 */
     if (!config.eval_ldb &&
         (!strcasecmp(argv[0],"help") || !strcasecmp(argv[0],"?")))
     {
@@ -2442,6 +2454,7 @@ static int issueCommandRepeat(int argc, char **argv, long repeat) {
         return REDIS_OK;
     }
 
+    /** 进入自旋，执行 redis 命令 */
     while (1) {
         if (config.cluster_reissue_command || context == NULL ||
             context->err == REDIS_ERR_IO || context->err == REDIS_ERR_EOF)
@@ -2459,6 +2472,9 @@ static int issueCommandRepeat(int argc, char **argv, long repeat) {
                 return REDIS_ERR;
             }
         }
+
+        /** 向 Redis 服务器发送命令，并根据 repeat 参数来决定执行次数。
+         * 如果发送命令失败，则打印客户端错误信息，释放 Redis 连接，返回 REDIS_ERR。 */
         if (cliSendCommand(argc,argv,repeat) != REDIS_OK) {
             cliPrintContextError();
             redisFree(context);
@@ -2467,6 +2483,7 @@ static int issueCommandRepeat(int argc, char **argv, long repeat) {
         }
 
         /* Issue the command again if we got redirected in cluster mode */
+        /** 如果客户端处于集群模式，并且设置了 cluster_reissue_command 的配置，则需要重新发送命令 */
         if (config.cluster_mode && config.cluster_reissue_command) {
             continue;
         }
@@ -2626,13 +2643,17 @@ static void repl(void) {
     }
 
     cliRefreshPrompt();
+    /** 阻塞获取 cli 端用户输入的命令 */
     while((line = linenoise(context ? config.prompt : "not connected> ")) != NULL) {
         if (line[0] != '\0') {
             long repeat = 1;
             int skipargs = 0;
             char *endptr = NULL;
 
+            /** 将字符串参数切割成数组 */
             argv = cliSplitArgs(line,&argc);
+
+            /** 有效性校验 */
             if (argv == NULL) {
                 printf("Invalid argument(s)\n");
                 fflush(stdout);
@@ -2662,21 +2683,25 @@ static void repl(void) {
                 repeat = 1;
             }
 
+            /** 判断是否是敏感命令，如果不是则需要将其添加到历史记录中，这样用户在下次使用命令行交互式界面时，可以通过上下箭头键来浏览和重复之前输入的命令。 */
             if (!isSensitiveCommand(argc - skipargs, argv + skipargs)) {
                 if (history) linenoiseHistoryAdd(line);
                 if (historyfile) linenoiseHistorySave(historyfile);
             }
 
+            /** 如果是退出命令，则执行 exit() 逻辑退出命令交互界面 */
             if (strcasecmp(argv[0],"quit") == 0 ||
                 strcasecmp(argv[0],"exit") == 0)
             {
                 exit(0);
             } else if (argv[0][0] == ':') {
+                /** 冒号开头，需要设置客户端的偏好参数 */
                 cliSetPreferences(argv,argc,1);
                 sdsfreesplitres(argv,argc);
                 linenoiseFree(line);
                 continue;
             } else if (strcasecmp(argv[0],"restart") == 0) {
+                /** 如果处于 LUA 调试模式下，将重启用户会话 */
                 if (config.eval) {
                     config.eval_ldb = 1;
                     config.output = OUTPUT_RAW;
@@ -2688,16 +2713,19 @@ static void repl(void) {
                     fflush(stdout);
                 }
             } else if (argc == 3 && !strcasecmp(argv[0],"connect")) {
+                /** 如果输入 connect ，并且参数是 3 个，那么根据用户提供的主机IP和端口号来重新设置客户端的连接信息 */
                 sdsfree(config.conn_info.hostip);
                 config.conn_info.hostip = sdsnew(argv[1]);
                 config.conn_info.hostport = atoi(argv[2]);
                 cliRefreshPrompt();
                 cliConnect(CC_FORCE);
             } else if (argc == 1 && !strcasecmp(argv[0],"clear")) {
+                /** 清屏 */
                 linenoiseClearScreen();
             } else {
                 long long start_time = mstime(), elapsed;
 
+                /** 【核心】：处理命令执行 */
                 issueCommandRepeat(argc-skipargs, argv+skipargs, repeat);
 
                 /* If our debugging session ended, show the EVAL final
