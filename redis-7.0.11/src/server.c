@@ -1191,6 +1191,22 @@ void cronUpdateMemoryStats() {
     }
 }
 
+/**
+ * 非 Redis 源码
+ * 作用：打印 ServerCron 的执行频率，用来观测执行时间是否是 1000/server.hz
+*/
+void printServerCronExecTime() {
+    struct timeval tv;
+    struct tm *timeinfo;
+    char buffer[80];
+    // 获取当前时间
+    gettimeofday(&tv, NULL);
+    timeinfo = localtime(&tv.tv_sec);
+    // 格式化并打印时间
+    strftime(buffer, sizeof(buffer), "%Y年%m月%d日%H:%M:%S", timeinfo);
+    printf("serverCron 函数的执行时间: %s:%03ld\n", buffer, tv.tv_usec / 1000);
+}
+
 /* This is our timer interrupt, called server.hz times per second.
  * Here is where we do a number of things that need to be done asynchronously.
  * For instance:
@@ -1225,6 +1241,8 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     UNUSED(eventLoop);
     UNUSED(id);
     UNUSED(clientData);
+
+    printServerCronExecTime();
 
     /* Software watchdog: deliver the SIGALRM that will reach the signal
      * handler if we don't return here fast enough. */
