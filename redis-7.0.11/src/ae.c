@@ -236,26 +236,55 @@ int aeGetFileEvents(aeEventLoop *eventLoop, int fd) {
     return fe->mask;
 }
 
+/**
+ * 在事件循环中创建一个时间事件
+ * 
+ * 
+*/
 long long aeCreateTimeEvent(aeEventLoop *eventLoop, long long milliseconds,
         aeTimeProc *proc, void *clientData,
         aeEventFinalizerProc *finalizerProc)
-{
+{   
+    /** 为时间事件生成的 id 字段，用来唯一标识时间事件 */
     long long id = eventLoop->timeEventNextId++;
     aeTimeEvent *te;
 
+    /** 给时间事件结构体分配内存，并判断是否分配成功 */
     te = zmalloc(sizeof(*te));
     if (te == NULL) return AE_ERR;
+    
+    /** 将唯一 ID 设置进去 */
     te->id = id;
+
+    /** 设置时间事件的触发时间，当前时间 us 加上 milliseconds 乘以 1000，假如传入的是 1，则触发时间是当前时间后一毫秒 */
     te->when = getMonotonicUs() + milliseconds * 1000;
+
+    /** 设置时间事件的触发函数，server.c 中 initServer() 函数中传入的是 serverCron 函数 */
     te->timeProc = proc;
+
+    /** 设置最终执行的函数，用来处理时间事件被删除时的清理工作 */
     te->finalizerProc = finalizerProc;
+
+    /** 回调函数中使用的客户端数据 */
     te->clientData = clientData;
+
+    /** 初始化前驱节点为 NULL */
     te->prev = NULL;
+
+    /** 初始化后继节点为原始的链表头结点 timeEventHead */
     te->next = eventLoop->timeEventHead;
+
+    /** 初始化引用计数为 0 */
     te->refcount = 0;
+
+    /** 如果后继节点存在的话，将后继结点的 prev 指针指向当前节点，链表头插的基操 */
     if (te->next)
         te->next->prev = te;
+
+    /** 接着将当前节点加到 timeEventHead 链表的头结点中 */
     eventLoop->timeEventHead = te;
+
+    /** 返回时间事件的ID */
     return id;
 }
 
@@ -296,38 +325,61 @@ static int64_t usUntilEarliestTimer(aeEventLoop *eventLoop) {
     return (now >= earliest->when) ? 0 : earliest->when - now;
 }
 
-/* Process time events */
+/* 处理时间事件 Process time events */
 static int processTimeEvents(aeEventLoop *eventLoop) {
+    /** 记录已处理的时间事件数量 */
     int processed = 0;
+    /** 时间事件结构体  */
     aeTimeEvent *te;
+    /** 最大时间事件的 ID */
     long long maxId;
 
+    /** 从事件循环处理器中获取到需要处理的时间事件链表的头结点 */
     te = eventLoop->timeEventHead;
+    /** 从事件循环处理器中获取到下一个时间事件的 ID 再减一，便是当前时间事件的最大ID */
     maxId = eventLoop->timeEventNextId-1;
+    /** 获取到当前的系统事件 */
     monotime now = getMonotonicUs();
+
+    /** 开始循环遍历时间事件链表，逐个处理时间事件 */
     while(te) {
         long long id;
 
         /* Remove events scheduled for deletion. */
+        /** 
+         * 当前 if 分支的逻辑概述：清理已被标记为删除的时间事件节点，确保这些节点不再参与后续的处理，并释放相应的资源。
+         * 判断如果当前遍历的时间事件是被删除的 （id = -1 为删除状态） 
+         * */
         if (te->id == AE_DELETED_EVENT_ID) {
+            /** 直接拿到当前被删除节点的下一个节点 */
             aeTimeEvent *next = te->next;
             /* If a reference exists for this timer event,
              * don't free it. This is currently incremented
              * for recursive timerProc calls */
+            /** 判断如果当前被删除的节点是否还被引用，还有引用的话，说明此节点存在递归调用等情况，就先暂时忽略此节点 */
             if (te->refcount) {
                 te = next;
                 continue;
             }
+            /** 如果节点没有被引用，则执行删除操作。先判断这个节点是否存在前驱节点 */
             if (te->prev)
+                /** 存在的话，直接将前驱节点的 next 指针指向当前要被删除节点的后继结点，此便是删除当前节点 */
                 te->prev->next = te->next;
             else
+                /** 如果不存在前驱节点，则说明此节点是链表的头结点，将 timeEventHead 指向当前节点的后继节点便是删除当前节点 */
                 eventLoop->timeEventHead = te->next;
+
+            /** 如果当前节点存在后继节点，则直接将后继节点的 prev 指针指向当前节点的前驱节点，此便是删除当前节点。
+             * 链表的删除元素的操作，参考：https://visualgo.net/zh/list 中双向链表的可视化演示 */
             if (te->next)
                 te->next->prev = te->prev;
+
+            /** 判断当前节点是否存在 finalizerProc 函数，如果存在则执行此函数进行清理操作，例如释放事件所使用的资源等  */
             if (te->finalizerProc) {
                 te->finalizerProc(eventLoop, te->clientData);
                 now = getMonotonicUs();
             }
+            /** 释放当前节点的内存，并将指针 te 指向 next 下一个节点，接着 while 循环中处理下一个时间事件节点 */
             zfree(te);
             te = next;
             continue;
@@ -338,26 +390,51 @@ static int processTimeEvents(aeEventLoop *eventLoop) {
          * add new timers on the head, however if we change the implementation
          * detail, this check may be useful again: we keep it here for future
          * defense. */
+        /**
+         * 如果当前正在处理的事件ID大于当前的时间事件最大ID，则跳过当前事件
+         * 
+         * 分析：时间事件的 ID 是一个自增数值，表示节点的创建顺序。maxId 则是时间事件链表里最大的 ID，用来标记当前迭代过程里最后一个时间事件的ID。
+         * 如果在后续有时间事件添加过来了，这个时间事件的 ID 则大于 maxId，说明此时间事件是在 while 迭代的过程中**新添加**进来的。此时这个时间事件
+         * 我们不应该立即处理，因为处理的过程中会修改链表结构，可能导致迭代发生问题。这一步操作就保证了当前迭代就只处理当前旧的时间事件，新加进来的
+         * 时间事件则在下一次迭代中处理。
+         * 
+         * 简而言之，就是每一次执行就只处理自己这一批的数据，不要去管后面新加进来的，新加进来的下一次执行时再处理。
+        */
         if (te->id > maxId) {
             te = te->next;
             continue;
         }
 
+        /** 判断当前是否到达了时间事件的任务执行时间，就是 now 当前时间大于等于任务的发生时间 */
         if (te->when <= now) {
             int retval;
 
+            /** 获取到当前时间事件的 id */
             id = te->id;
+            
+            /** 事件的引用数 +1 */
             te->refcount++;
+
+            /**【核心 - 实际执行时间事件的地方】 然后执行时间事件的 timeProc 函数 */
             retval = te->timeProc(eventLoop, id, te->clientData);
+            /** 将时间事件的引用数减一 */
             te->refcount--;
+            /** 处理的事件数量加一 */
             processed++;
+
+            /** 重置当前时间，确保后续的时间事件触发时间是基于最新的时间 */
             now = getMonotonicUs();
+            
+            /** 时间事件返回的状态不为 no more 的话，说明还有事件需要执行，则更新 when 参数设置重新触发时间 */
             if (retval != AE_NOMORE) {
                 te->when = now + retval * 1000;
             } else {
+                /** 此处说明没有更多事件执行了，需要将事件标记为删除状态 */
                 te->id = AE_DELETED_EVENT_ID;
             }
         }
+
+        /** 链表迭代下一个时间事件节点 */
         te = te->next;
     }
     return processed;
@@ -530,12 +607,14 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
                 }
             }
 
+            /** 处理文件事件 +1 */
             processed++;
         }
     }
     /* Check time events */
     /** 如果是时间事件，那么在此处执行时间事件处理函数 */
     if (flags & AE_TIME_EVENTS)
+        /** 处理时间事件，并将 processed 加上处理了时间事件的数量 */
         processed += processTimeEvents(eventLoop);
 
     return processed; /* return the number of processed file/time events */

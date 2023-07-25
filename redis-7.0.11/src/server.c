@@ -1209,7 +1209,17 @@ void cronUpdateMemoryStats() {
  * so in order to throttle execution of things we want to do less frequently
  * a macro is used: run_with_period(milliseconds) { .... }
  */
-
+/**
+ * 定时器函数 serverCron，每秒调用 server.hz 次。方法大概会执行以下逻辑：
+ * 1. 将过期的 key 做过期处理
+ * 2. 看门狗
+ * 3. 更新一些统计信息
+ * 4. rehashing DB 的 hash 表
+ * 5. 触发 BGSAVE / AOF 的重写，并且处理终止的子进程
+ * 6. 客户端超时处理
+ * 7. 主从复制的重新连接
+ * 8. 等等...
+*/
 int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     int j;
     UNUSED(eventLoop);
@@ -2719,7 +2729,14 @@ void initServer(void) {
     /* Create the timer callback, this is our way to process many background
      * operations incrementally, like clients timeout, eviction of unaccessed
      * expired keys and so forth. */
-    /** 创建时间事件处理器，用来处理后台任务 */
+    /** 
+     * 创建时间事件处理器，用来处理后台任务
+     * 
+     * 第二个参数 1 表示任务需要在 1 毫秒后执行
+     * 第三个参数 serverCron 表示要执行什么任务，其返回参数为 1000/server.hz，表示在这个时间之后需要再次执行这个 serverCron 函数
+     * 
+     * 默认 server.hz 是 10，则 serverCron 返回参数是 1000/10 = 100，则说明 serverCron 会周期性执行，每次间隔为 100 毫秒。
+     */
     if (aeCreateTimeEvent(server.el, 1, serverCron, NULL, NULL) == AE_ERR) {
         serverPanic("Can't create event loop timers.");
         exit(1);

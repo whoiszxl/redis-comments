@@ -31,16 +31,54 @@
 
 #include <sys/epoll.h>
 
+/**
+ * 一个对 epoll、select、kqueue、evport 这几种 IO 多路复用模型进行封装的结构体。
+ * ae_epoll.c | ae_evport.c | ae_kqueue.c | ae_select.c 这四个文件中都有一个 aeApiState
+ * 通过这一层封装适配，Redis 在调用时便不需要关注底层实现的差异，只要对 aeApiState 进行操作就可。
+ * 这一块逻辑与 Java 中多个类实现一个接口的逻辑类似。
+*/
 typedef struct aeApiState {
     int epfd; /* epoll监听的内核注册表的文件描述符，这个文件描述符可以实现事件的注册、修改、删除等操作 */
-    struct epoll_event *events; /* 存储发生事件的详细信息 */
+
+    /**
+     * 用于描述一个就绪事件以及与该事件相关的用户数据，定义在 </usr/include/x86_64-linux-gnu/sys/epoll.h>, 结构如下：
+     * 
+     *     struct epoll_event
+     *     {
+     *         uint32_t events;	 
+     *         epoll_data_t data;
+     *     } __EPOLL_PACKED;
+     * 
+     * 其中 events 是一个位掩码，用于指定感兴趣的事件类型。可以是以下值的按位或组合：
+     * EPOLLIN: 表示文件描述符可读。
+     * EPOLLOUT: 表示文件描述符可写。
+     * EPOLLRDHUP: 表示对端断开连接或关闭写操作。
+     * EPOLLPRI: 表示有紧急数据可读。
+     * EPOLLERR: 表示发生错误。
+     * EPOLLHUP: 表示发生挂起事件。
+     * EPOLLET: 表示设置边缘触发模式。
+     * EPOLLONESHOT: 表示一次性触发，触发后需要重新添加到 epoll 队列中才能再次监听。
+     * 
+     * 其中 data 则是一个联合体类型 epoll_data_t，用于存储用户数据，可以是一个指针或整数。
+     * 
+     * typedef union epoll_data {
+     *     void    *ptr;    // 用于存储指针类型的用户数据
+     *     int      fd;     // 用于存储文件描述符类型的用户数据
+     *     uint32_t u32;    // 用于存储 32 位无符号整数类型的用户数据
+     *     uint64_t u64;    // 用于存储 64 位无符号整数类型的用户数据
+     * } epoll_data_t;
+     * 
+     * 
+    */
+    struct epoll_event *events;
+
 } aeApiState;
 
 /**
  * 创建并初始化事件处理器
 */
 static int aeApiCreate(aeEventLoop *eventLoop) {
-    /** 通过调用 zmalloc 函数为 aeApiState 结构分配内存，并检查分配是否成功。  */
+    /** 通过调用 zmalloc 函数为 aeApiState 结构分配内存，并检查分配是否成功。*/
     aeApiState *state = zmalloc(sizeof(aeApiState));
     if (!state) return -1;
 
@@ -74,21 +112,36 @@ static int aeApiCreate(aeEventLoop *eventLoop) {
     return 0;
 }
 
+/**
+ * 重新设置 state->events 的大小
+*/
 static int aeApiResize(aeEventLoop *eventLoop, int setsize) {
+    /** 从时间循环处理器中拿到 state */
     aeApiState *state = eventLoop->apidata;
 
+    /** zrealloc 重新分配 events 的内存大小 */
     state->events = zrealloc(state->events, sizeof(struct epoll_event)*setsize);
     return 0;
 }
 
+/**
+ * 释放 aeApiState 的内存
+*/
 static void aeApiFree(aeEventLoop *eventLoop) {
+    /** 从时间循环处理器中拿到 state */
     aeApiState *state = eventLoop->apidata;
 
+    /** 关闭 epoll 的连接 */
     close(state->epfd);
+    /** 释放 events 的内存空间 */
     zfree(state->events);
+    /** 释放 state 的内存 */
     zfree(state);
 }
 
+/**
+ * 添加一个 fd 文件描述符到 epoll 实例中
+*/
 static int aeApiAddEvent(aeEventLoop *eventLoop, int fd, int mask) {
     /** 获取到对应的IO多路复用事件处理机制，此处获取的为 epoll */
     aeApiState *state = eventLoop->apidata;
@@ -105,7 +158,7 @@ static int aeApiAddEvent(aeEventLoop *eventLoop, int fd, int mask) {
     /** epoll_event events 初始化为 0 */
     ee.events = 0;
 
-    /** 将原始时间的 mask 与 新的 mask 合并 */
+    /** 将原始事件的 mask 与 新的 mask 合并 */
     mask |= eventLoop->events[fd].mask; /* Merge old events */
 
     /** 判断新的 mask 是否是读写事件，若是则将 epoll 对应的状态 EPOLLIN EPOLLOUT 通过位或操作新增到 ee.events 中 */
@@ -120,20 +173,34 @@ static int aeApiAddEvent(aeEventLoop *eventLoop, int fd, int mask) {
     return 0;
 }
 
+/**
+ * 从 epoll 实例中删除一个 fd 文件描述符的事件信息
+*/
 static void aeApiDelEvent(aeEventLoop *eventLoop, int fd, int delmask) {
+    /** 从时间循环处理器中拿到 state */
     aeApiState *state = eventLoop->apidata;
-    struct epoll_event ee = {0}; /* avoid valgrind warning */
-    int mask = eventLoop->events[fd].mask & (~delmask);
 
+    /** 创建一个 struct epoll_event 类型的变量 ee，用于向 epoll 实例中添加或修改事件时使用。 */
+    struct epoll_event ee = {0}; /* avoid valgrind warning */
+    /** 将 fd 对应的事件的 mask 事件掩码与取反后的删除事件掩码进行与运算后得到删除后的事件状态 */
+    int mask = eventLoop->events[fd].mask & (~delmask);
+    
     ee.events = 0;
+    
+    /** 如果 mask 里存在读写事件，则将 ee.events 加上 EPOLLIN | EPOLLOUT 的状态 */
     if (mask & AE_READABLE) ee.events |= EPOLLIN;
     if (mask & AE_WRITABLE) ee.events |= EPOLLOUT;
+
+    /** 加上 fd */
     ee.data.fd = fd;
+
+    /** 判断，如果 mask 不为空，则做更新操作 */
     if (mask != AE_NONE) {
         epoll_ctl(state->epfd,EPOLL_CTL_MOD,fd,&ee);
     } else {
         /* Note, Kernel < 2.6.9 requires a non null event pointer even for
          * EPOLL_CTL_DEL. */
+        /** 为空则做删除操作 */
         epoll_ctl(state->epfd,EPOLL_CTL_DEL,fd,&ee);
     }
 }
@@ -193,6 +260,7 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
     return numevents;
 }
 
+/** 返回 IO 多路复用模型的名称 */
 static char *aeApiName(void) {
     return "epoll";
 }
