@@ -1072,6 +1072,7 @@ void databasesCron(void) {
 }
 
 static inline void updateCachedTimeWithUs(int update_daylight_info, const long long ustime) {
+    /** 更新 redisServer 的 ustime(微秒)，mstime(毫秒)，unixtime(秒) */
     server.ustime = ustime;
     server.mstime = server.ustime / 1000;
     time_t unixtime = server.mstime / 1000;
@@ -1082,6 +1083,14 @@ static inline void updateCachedTimeWithUs(int update_daylight_info, const long l
      * context is safe since we will never fork() while here, in the main
      * thread. The logging function will call a thread safe version of
      * localtime that has no locks. */
+    /**
+     * 判断是否需要更新 DST(Daylight Saving Time，夏令时，又称日光节约时制)，是一种为节约能源而人为规定地方时间的制度。
+     * 
+     * 用于在夏季将时间向前调整一个小时，以便在晚间减少用电量，充分利用自然光线。具体做法是在夏季时钟向前调整一小时，通常
+     * 在凌晨2点的时候，这样晚间的光照时间相对延长。
+     * 
+     * 此处通过 localtime_r 方法来决定 server.daylight_active 的值
+    */
     if (update_daylight_info) {
         struct tm tm;
         time_t ut = server.unixtime;
@@ -1101,7 +1110,9 @@ static inline void updateCachedTimeWithUs(int update_daylight_info, const long l
  * such info only when calling this function from serverCron() but not when
  * calling it from call(). */
 void updateCachedTime(int update_daylight_info) {
+    /** 获取当前时间，以 us 微秒为单位  */
     const long long us = ustime();
+    /** 更新缓存事件 */
     updateCachedTimeWithUs(update_daylight_info, us);
 }
 
@@ -1242,18 +1253,41 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     UNUSED(id);
     UNUSED(clientData);
 
-    printServerCronExecTime();
+    /** 打印 serverCron 执行的时间，用来观测 serverCron 的时间间隔是否正确 */
+    //printServerCronExecTime();
 
     /* Software watchdog: deliver the SIGALRM that will reach the signal
      * handler if we don't return here fast enough. */
+    /** 
+     * 判断是否开启了看门狗机制，开启了则调用 watchdogScheduleSignal 方法。
+     * 
+     * 此看门狗是用来看任务的执行延迟是否严重，比如说执行命令 CONFIG SET watchdog-period 200 将延迟时间设置为 200ms，
+     * Redis 就会对自身的命令处理进行性能监控，类似慢日志，它会将一些操作不够快的处理记录在日志里，并把调用的堆栈打出来。
+     * 
+     * 这个操作开启可能会对数据造成影响，所以不要轻易操作，影响系统稳定。
+     */
     if (server.watchdog_period) watchdogScheduleSignal(server.watchdog_period);
 
-    /* Update the time cache. */
+    /** 
+     * 更新当前的时间缓存，时间缓存是一个保存着当前时间的变量，它会被不断地更新以避免频繁
+     * 地调用系统调用来获取当前时间。在这里，传递的参数 1 表示要更新夏令时时间。
+     * 
+     * 一般获取当前时间戳调用 gettimeofday() 来做的话，在性能要求很高的场景，通过放大效应，这个函数会拖慢系统。
+     * 所以这里可以把当前时间的 微秒、毫秒、秒 更新到 redisServer 实例中，每次直接拿出来用就好了。
+     * 
+     * 但是每次更新时是有延迟的，所以这三个值的精确度并不高，一般日志打印、是否需要持久化等精确度不高的操作才会使用到。
+     * */
     updateCachedTime(1);
 
+    /** 更新执行频率，config_hz 默认为 10 */
     server.hz = server.config_hz;
+    
     /* Adapt the server.hz value to the number of configured clients. If we have
      * many clients, we want to call serverCron() with an higher frequency. */
+    /**
+     * 判断是否开启了动态 hz，其作用是根据目前有多少客户端连接到了服务端来决定，客户端越多，
+     * hz则越大，执行频率则越高。hz 上限 500，意思是每秒最多执行 500 次。
+    */
     if (server.dynamic_hz) {
         while (listLength(server.clients) / server.hz >
                MAX_CLIENTS_PER_CLOCK_TICK)
