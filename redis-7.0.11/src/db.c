@@ -84,10 +84,15 @@ void updateLFU(robj *val) {
  * Even if the key expiry is master-driven, we can correctly report a key is
  * expired on replicas even if the master is lagging expiring our key via DELs
  * in the replication link. */
+/** 查找数据库中指定的 key */
 robj *lookupKey(redisDb *db, robj *key, int flags) {
+    /** 从字典中找到对应的节点 */
     dictEntry *de = dictFind(db->dict,key->ptr);
     robj *val = NULL;
+
+    /** 节点存在 */ 
     if (de) {
+        /** 从节点中获取到 key 对应的 value */
         val = dictGetVal(de);
         /* Forcing deletion of expired keys on a replica makes the replica
          * inconsistent with the master. We forbid it on readonly replicas, but
@@ -97,12 +102,27 @@ robj *lookupKey(redisDb *db, robj *key, int flags) {
          * It's possible that the WRITE flag is set even during a readonly
          * command, since the command may trigger events that cause modules to
          * perform additional writes. */
+        /** 
+         * is_ro_replica 如果为 true，说明此服务是 slave 的只读服务，在执行过期处理时不能强制删除过期 key
+         * 如果为 false，则说明此服务是 master 服务。
+        */
         int is_ro_replica = server.masterhost && server.repl_slave_ro;
+
+        /** 过期处理的标志位 */
         int expire_flags = 0;
+
+        /**
+         * 如果传入的 flags 中包含 LOOKUP_WRITE 标志，并且当前服务器不是只读的 slave，那么就需要强制删除过期的键。
+         * 如果传入的 flags 中包含 LOOKUP_NOEXPIRE 标志，表示在过期处理时避免删除键。
+        */
         if (flags & LOOKUP_WRITE && !is_ro_replica)
             expire_flags |= EXPIRE_FORCE_DELETE_EXPIRED;
         if (flags & LOOKUP_NOEXPIRE)
             expire_flags |= EXPIRE_AVOID_DELETE_EXPIRED;
+
+        /**
+         * 调用过期处理函数，根据 expire_flags 的条件来处理。
+        */
         if (expireIfNeeded(db, key, expire_flags)) {
             /* The key is no longer valid. */
             val = NULL;
@@ -668,13 +688,24 @@ void flushallCommand(client *c) {
 }
 
 /* This command implements DEL and LAZYDEL. */
+/**
+ * 删除的通用命令
+*/
 void delGenericCommand(client *c, int lazy) {
     int numdel = 0, j;
 
+    /**
+     * 循环删除，比如执行命令为：del username age address，则循环三次删除 username age address
+    */
     for (j = 1; j < c->argc; j++) {
+        /** 惰性过期检测，检测 key 是否已经过期了 */
         expireIfNeeded(c->db,c->argv[j],0);
+
+        /** 判断是否需要惰性删除，true 则走 dbAsyncDelete 函数，false 则走 dbSyncDelete 函数 */
         int deleted  = lazy ? dbAsyncDelete(c->db,c->argv[j]) :
                               dbSyncDelete(c->db,c->argv[j]);
+        
+        /** 如果删除成功，则通知 db 发生了删除事件，通知键空间有删除事件，dirty 加一，numdel 加一 */
         if (deleted) {
             signalModifiedKey(c,c->db,c->argv[j]);
             notifyKeyspaceEvent(NOTIFY_GENERIC,
@@ -683,6 +714,7 @@ void delGenericCommand(client *c, int lazy) {
             numdel++;
         }
     }
+    /** 返回结果，结果为删除了多少个 key */
     addReplyLongLong(c,numdel);
 }
 
@@ -1566,18 +1598,32 @@ long long getExpire(redisDb *db, robj *key) {
 }
 
 /* Delete the specified expired key and propagate expire. */
+/**
+ * 删除指定的过期键
+*/
 void deleteExpiredKeyAndPropagate(redisDb *db, robj *keyobj) {
     mstime_t expire_latency;
+    /** 监视过期键的删除操作和延迟时间 */
     latencyStartMonitor(expire_latency);
+
+    /** 判断 server.lazyfree_lazy_expire 配置是否开启，开启则异步删除，否则同步删除 */
     if (server.lazyfree_lazy_expire)
         dbAsyncDelete(db,keyobj);
     else
         dbSyncDelete(db,keyobj);
+
+    /** 结束监视过期键删除操作和延迟时间 */
     latencyEndMonitor(expire_latency);
+    /** 将监控结果添加到样本中，用于性能监控 */
     latencyAddSampleIfNeeded("expire-del",expire_latency);
+
+    /** 发送过期事件通知 */
     notifyKeyspaceEvent(NOTIFY_EXPIRED,"expired",keyobj,db->id);
+    /** 通知服务器该键已被修改 */
     signalModifiedKey(NULL, db, keyobj);
+    /** 播删除操作到所有连接的客户端 */
     propagateDeletion(db,keyobj,server.lazyfree_lazy_expire);
+    /** 过期 key 数量加一 */
     server.stat_expiredkeys++;
 }
 
@@ -1620,12 +1666,15 @@ void propagateDeletion(redisDb *db, robj *key, int lazy) {
 
 /* Check if the key is expired. */
 int keyIsExpired(redisDb *db, robj *key) {
+    /** 从 db->expires 中拿到过期时间 */
     mstime_t when = getExpire(db,key);
     mstime_t now;
 
+    /** 判断是否为 -1，-1的是永不失效的 */
     if (when < 0) return 0; /* No expire for this key */
 
     /* Don't expire anything while loading. It will be done later. */
+    /** 正在加载数据的时候不检查 */
     if (server.loading) return 0;
 
     /* If we are in the context of a Lua script, we pretend that time is
@@ -1633,6 +1682,10 @@ int keyIsExpired(redisDb *db, robj *key) {
      * only the first time it is accessed and not in the middle of the
      * script execution, making propagation to slaves / AOF consistent.
      * See issue #1525 on Github for more information. */
+    /**
+     * 判断是否正在执行 LUA 脚本，那么将当前时间设置为 Lua 脚本开始执行的时间。
+     * 这样，当键在 Lua 脚本执行期间过期，过期时间将保持一致，以便在复制到从节点或生成 AOF 文件时保持一致性。
+    */
     if (server.script_caller) {
         now = scriptTimeSnapshot();
     }
@@ -1686,6 +1739,10 @@ int keyIsExpired(redisDb *db, robj *key) {
  * The return value of the function is 0 if the key is still valid,
  * otherwise the function returns 1 if the key is expired. */
 int expireIfNeeded(redisDb *db, robj *key, int flags) {
+
+    /**
+     * 判断 key 是否已经过期了，过期了则直接返回 0
+    */
     if (!keyIsExpired(db,key)) return 0;
 
     /* If we are running in the context of a replica, instead of
@@ -1701,13 +1758,25 @@ int expireIfNeeded(redisDb *db, robj *key, int flags) {
      *
      * When replicating commands from the master, keys are never considered
      * expired. */
+    /**
+     * 如果 server 是 主从模式下的 slave 节点
+    */
     if (server.masterhost != NULL) {
+        /** 正在从主节点接收复制命令的从节点，不主动删除过期键，因为主节点会发送合
+         * 成的 DEL 命令来处理过期键，从节点会在复制主节点的 DEL 命令时同步删除过期键 */
         if (server.current_client == server.master) return 0;
+
+        /** 如何从节点没有写操作，返回1 */
         if (!(flags & EXPIRE_FORCE_DELETE_EXPIRED)) return 1;
     }
 
     /* In some cases we're explicitly instructed to return an indication of a
      * missing key without actually deleting it, even on masters. */
+    /**
+     * 如果有 EXPIRE_AVOID_DELETE_EXPIRED 标记，则表示不要删除过期键，即使在主节点上也不要删除。
+     * 
+     * 函数返回 1，表示键已过期。
+    */
     if (flags & EXPIRE_AVOID_DELETE_EXPIRED)
         return 1;
 
@@ -1715,9 +1784,12 @@ int expireIfNeeded(redisDb *db, robj *key, int flags) {
      * but return to the client what we believe is the right state. Typically,
      * at the end of the pause we will properly expire the key OR we will
      * have failed over and the new primary will send us the expire. */
+    /**
+     * 如果客户端处于暂停状态，函数将检查客户端暂停的超时时间并返回。
+    */
     if (checkClientPauseTimeoutAndReturnIfPaused()) return 1;
 
-    /* Delete the key */
+    /* 执行删除操作 */
     deleteExpiredKeyAndPropagate(db,key);
     return 1;
 }

@@ -510,9 +510,11 @@ int parseExtendedExpireArgumentsOrReply(client *c, int *flags) {
     int nx = 0, xx = 0, gt = 0, lt = 0;
 
     int j = 3;
+    /** 判断是否存在多个参数，比如说执行命令为：expire username 100 nx，则此处会进入 nx 分支 */
     while (j < c->argc) {
         char *opt = c->argv[j]->ptr;
-        if (!strcasecmp(opt,"nx")) {
+        if (!strcasecmp(opt,"nx")) { /** nx 分支 */
+            /** 更新 flags 的二进制第一位为 1，并将 nx 变量置为 1，其他分支以此类推 */
             *flags |= EXPIRE_NX;
             nx = 1;
         } else if (!strcasecmp(opt,"xx")) {
@@ -525,12 +527,14 @@ int parseExtendedExpireArgumentsOrReply(client *c, int *flags) {
             *flags |= EXPIRE_LT;
             lt = 1;
         } else {
+            /** 扩展参数不在 nx，xx，gt，lt 中，则报错 */
             addReplyErrorFormat(c, "Unsupported option %s", opt);
             return C_ERR;
         }
         j++;
     }
 
+    /** 命令不能混用的校验 */
     if ((nx && xx) || (nx && gt) || (nx && lt)) {
         addReplyError(c, "NX and XX, GT or LT options at the same time are not compatible");
         return C_ERR;
@@ -557,46 +561,60 @@ int parseExtendedExpireArgumentsOrReply(client *c, int *flags) {
  * the argv[2] parameter. The basetime is always specified in milliseconds.
  *
  * Additional flags are supported and parsed via parseExtendedExpireArguments */
+/**
+ * 过期操作
+*/
 void expireGenericCommand(client *c, long long basetime, int unit) {
+    /** 获取到命令中的 key 与 param 参数，假如执行的是: expire username 100，则 key 为 username，value 为 100 */
     robj *key = c->argv[1], *param = c->argv[2];
     long long when; /* unix time in milliseconds when the key will expire. */
     long long current_expire = -1;
     int flag = 0;
 
-    /* checking optional flags */
+    /* 解析扩展的过期参数 */
     if (parseExtendedExpireArgumentsOrReply(c, &flag) != C_OK) {
         return;
     }
 
+    /** 校验参数是否能转长整型，如果可以则将值存储到 when 字段中 */
     if (getLongLongFromObjectOrReply(c, param, &when, NULL) != C_OK)
         return;
 
     /* EXPIRE allows negative numbers, but we can at least detect an
      * overflow by either unit conversion or basetime addition. */
+    /** 接着判断单位是否为秒，再判断过期时间是否在 long long 类型的范围内，避免溢出 */
     if (unit == UNIT_SECONDS) {
         if (when > LLONG_MAX / 1000 || when < LLONG_MIN / 1000) {
+            /** 时间太长或者太短，直接返回报错 */
             addReplyErrorExpireTime(c);
             return;
         }
+        /** 乘以 1000，得到以毫秒为单位的过期时间 */
         when *= 1000;
     }
 
+    /** 判断毫秒单位的过期时间是否接近于 long long 的最大值，如是则报错返回 */
     if (when > LLONG_MAX - basetime) {
         addReplyErrorExpireTime(c);
         return;
     }
+
+    /** 过期时间加上当前时间的时间戳得到真正的过期时间 */
     when += basetime;
 
-    /* No key, return zero. */
+    /* 从 db 中寻找 key，如果不存在，直接返回 0  */
     if (lookupKeyWrite(c->db,key) == NULL) {
         addReply(c,shared.czero);
         return;
     }
 
+    /** 如果 flag 存在值，则说明存在附加参数 */
     if (flag) {
+        /** 从 db->expires 中拿到原始 key 的过期时间 */
         current_expire = getExpire(c->db, key);
 
         /* NX option is set, check current expiry */
+        /** 判断是否加了 nx 参数，如果加了则判断原始 key 有没有设置过期时间，有设置的话直接返回 */
         if (flag & EXPIRE_NX) {
             if (current_expire != -1) {
                 addReply(c,shared.czero);
@@ -605,6 +623,7 @@ void expireGenericCommand(client *c, long long basetime, int unit) {
         }
 
         /* XX option is set, check current expiry */
+        /** 判断是否加了 xx 参数，如果加了则判断原始 key 有没有设置过期时间，没设置的话直接返回 */
         if (flag & EXPIRE_XX) {
             if (current_expire == -1) {
                 /* reply 0 when the key has no expiry */
@@ -614,6 +633,7 @@ void expireGenericCommand(client *c, long long basetime, int unit) {
         }
 
         /* GT option is set, check current expiry */
+        /** 判断是否加了 gt 参数，如果加了则判断当前设置的过期时间有没有大于原始的过期时间，不大于的话，则直接返回 */
         if (flag & EXPIRE_GT) {
             /* When current_expire is -1, we consider it as infinite TTL,
              * so expire command with gt always fail the GT. */
@@ -625,6 +645,7 @@ void expireGenericCommand(client *c, long long basetime, int unit) {
         }
 
         /* LT option is set, check current expiry */
+        /** 判断是否加了 lt 参数，如果加了则判断当前设置的过期时间有没有小于原始的过期时间，不小于的话，则直接返回 */
         if (flag & EXPIRE_LT) {
             /* When current_expire -1, we consider it as infinite TTL,
              * but 'when' can still be negative at this point, so if there is
@@ -637,26 +658,43 @@ void expireGenericCommand(client *c, long long basetime, int unit) {
         }
     }
 
+    /** 检查 when 过期的时间是否小于等于当前时间，为 true 则说明这个 key 已经过期了，直接去删除对应的 key 。 */
     if (checkAlreadyExpired(when)) {
         robj *aux;
 
+        /** 如果配置了惰性删除，则走 dbAsyncDelete 异步删除逻辑，否则走同步删除逻辑，删除成功返回 1 */
         int deleted = server.lazyfree_lazy_expire ? dbAsyncDelete(c->db,key) :
                                                     dbSyncDelete(c->db,key);
+
+                                                    
         serverAssertWithInfo(c,key,deleted);
+
+        /** server 中更改次数加一 */
         server.dirty++;
 
         /* Replicate/AOF this as an explicit DEL or UNLINK. */
+
+        /** lazyfree_lazy_expire 为真，则使用 UNLINK 命令，否则使用 DEL 命令 */
         aux = server.lazyfree_lazy_expire ? shared.unlink : shared.del;
+
+        /** 将 unlink 或者 del 操作加入到 AOF 文件中 */
         rewriteClientCommandVector(c,2,aux,key);
+
+        /** 通知 server 有一个键被修改 */
         signalModifiedKey(c,c->db,key);
+
+        /** 向键空间事件通知机制发送一个 del 事件，这会触发对应的键空间事件。 */
         notifyKeyspaceEvent(NOTIFY_GENERIC,"del",key,c->db->id);
         addReply(c, shared.cone);
         return;
     } else {
+        /** 如果 when 还没到期，则将 when 添加到 db->expires 里面 */
         setExpire(c,c->db,key,when);
+        /** 在缓冲区添加成功的标记 */
         addReply(c,shared.cone);
         /* Propagate as PEXPIREAT millisecond-timestamp
          * Only rewrite the command arg if not already PEXPIREAT */
+        /** 检查客户端的当前命令是否为 PEXPIREAT，如果不是，则将第一个命令参数修改为 PEXPIREAT，以便在重写 AOF 文件时正确持久化这个命令。 */
         if (c->cmd->proc != pexpireatCommand) {
             rewriteClientCommandArgument(c,0,shared.pexpireat);
         }
@@ -664,11 +702,14 @@ void expireGenericCommand(client *c, long long basetime, int unit) {
         /* Avoid creating a string object when it's the same as argv[2] parameter  */
         if (basetime != 0 || unit == UNIT_SECONDS) {
             robj *when_obj = createStringObjectFromLongLong(when);
+            /** 将第三个参数更改为 when_obj */
             rewriteClientCommandArgument(c,2,when_obj);
             decrRefCount(when_obj);
         }
 
+        /** 通知 server 有一个键被修改 */
         signalModifiedKey(c,c->db,key);
+        /** 向键空间事件通知机制发送一个 del 事件，这会触发对应的键空间事件。 */
         notifyKeyspaceEvent(NOTIFY_GENERIC,"expire",key,c->db->id);
         server.dirty++;
         return;
