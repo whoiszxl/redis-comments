@@ -2,6 +2,20 @@
     "files.associations": {
         "type_traits": "c",
         "socket.h": "c",
-        "thread": "c"
+        "thread": "c",
+        "stddef.h": "c",
+        "bit": "c",
+        "compare": "c",
+        "condition_variable": "c",
+        "cstddef": "c",
+        "string": "c",
+        "optional": "c",
+        "future": "c",
+        "limits": "c",
+        "memory": "c",
+        "new": "c",
+        "ranges": "c",
+        "functional": "c",
+        "cmath": "c"
     }
 }

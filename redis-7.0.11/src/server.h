@@ -153,12 +153,12 @@ typedef long long ustime_t; /* microsecond time type. */
 
 /* Instantaneous metrics tracking. */
 #define STATS_METRIC_SAMPLES 16     /* Number of samples per metric. */
-#define STATS_METRIC_COMMAND 0      /* Number of commands executed. */
-#define STATS_METRIC_NET_INPUT 1    /* Bytes read to network. */
-#define STATS_METRIC_NET_OUTPUT 2   /* Bytes written to network. */
-#define STATS_METRIC_NET_INPUT_REPLICATION 3   /* Bytes read to network during replication. */
-#define STATS_METRIC_NET_OUTPUT_REPLICATION 4   /* Bytes written to network during replication. */
-#define STATS_METRIC_COUNT 5
+#define STATS_METRIC_COMMAND 0      /* 执行的命令数量 Number of commands executed. */
+#define STATS_METRIC_NET_INPUT 1    /* 网络输入字节数 Bytes read to network. */
+#define STATS_METRIC_NET_OUTPUT 2   /* 网络输出字节数 Bytes written to network. */
+#define STATS_METRIC_NET_INPUT_REPLICATION 3   /* 主从复制期间的网络输入字节数 Bytes read to network during replication. */
+#define STATS_METRIC_NET_OUTPUT_REPLICATION 4   /* 主从复制期间的网络输出字节数 Bytes written to network during replication. */
+#define STATS_METRIC_COUNT 5 /** 一共五个指标 */
 
 /* Protocol and I/O related defines */
 #define PROTO_IOBUF_LEN         (1024*16)  /* Generic I/O buffer size */
@@ -617,6 +617,16 @@ typedef enum {
 /* Using the following macro you can run code inside serverCron() with the
  * specified period, specified in milliseconds.
  * The actual resolution depends on server.hz. */
+/**
+ * 这个宏定义为在 serverCron() 函数内部运行周期性的任务，周期以毫秒为单位。比如说 _ms_ 传入了 500，那么这个任务会每 500 毫秒执行一次，
+ * 不会因为 server.hz 的定义而被干扰到。这个实现机制是 !(server.cronloops%((_ms_)/(1000/server.hz))) 这段代码实现的。
+ * 
+ * 逻辑为：server.cronloops 记录了当前执行的循环次数，如果它可以整除 ((_ms_)/(1000/server.hz)) ，比如 _ms_ 是 500，hz 是 10，那么结果
+ * 是 50，意思每 50 此 serverCron 的执行，run_with_period 才会执行一次。能够整除则说明已经到了第 50 次了，再次给 0 取反则得到结果。
+ * 
+ * 但是有例外的(_ms_ <= 1000/server.hz)，如果定义的这个 _ms_ 执行频率小于等于了 1000/server.hz 的频率，则说明每次 serverCron 都要执行。
+ * 
+*/
 #define run_with_period(_ms_) if ((_ms_ <= 1000/server.hz) || !(server.cronloops%((_ms_)/(1000/server.hz))))
 
 /* We can print the stacktrace, so our assert is defined this way: */
@@ -1793,14 +1803,16 @@ struct redisServer {
     long long stat_io_writes_processed; /* Number of write events processed by IO / Main threads */
     redisAtomic long long stat_total_reads_processed; /* Total number of read events processed */
     redisAtomic long long stat_total_writes_processed; /* Total number of write events processed */
+
     /* The following two are used to track instantaneous metrics, like
      * number of operations per second, network traffic. */
     struct {
-        long long last_sample_time; /* Timestamp of last sample in ms */
-        long long last_sample_count;/* Count in last sample */
-        long long samples[STATS_METRIC_SAMPLES];
-        int idx;
+        long long last_sample_time; /* 上次采样的时间，毫秒为单位 Timestamp of last sample in ms */
+        long long last_sample_count;/* 上次采样的数量 Count in last sample */
+        long long samples[STATS_METRIC_SAMPLES]; /** 数组长度默认为 16，保存 16 次采样结果 */
+        int idx; /** 记录下标，每次采样后 +1 */
     } inst_metric[STATS_METRIC_COUNT];
+    
     long long stat_reply_buffer_shrinks; /* Total number of output buffer shrinks */
     long long stat_reply_buffer_expands; /* Total number of output buffer expands */
 
